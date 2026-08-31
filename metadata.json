@@ -1,0 +1,10 @@
+{
+  "name": "ARC",
+  "description": "ARC: Adaptive reasoning learning platform with interactive prerequisite knowledge graphs, single-question-per-topic assessments, real-time voice conversations via Live API, and voice speech-to-text audio transcription.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
