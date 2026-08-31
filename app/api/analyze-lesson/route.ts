@@ -1,5 +1,6 @@
 import { DEFAULT_CURRICULA } from '../../../src/data/defaultCurricula';
 import { LessonData } from '../../../src/types';
+import { GoogleGenAI } from '@google/genai';
 
 export async function POST(req: Request) {
   try {
@@ -12,18 +13,8 @@ export async function POST(req: Request) {
       return Response.json(DEFAULT_CURRICULA[curriculumKey]);
     }
 
-    const apiKey = process.env.NVIDIA_API_KEY;
-
-    if (!apiKey) {
-      // Return matching default or dynamically generated structured curriculum
-      const matched = Object.values(DEFAULT_CURRICULA).find(
-        (c: LessonData) => c.topic.toLowerCase().includes(topic.toLowerCase())
-      );
-      if (matched) {
-        return Response.json(matched);
-      }
-      return Response.json(generateFallbackCurriculum(topic));
-    }
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const nvidiaKey = process.env.NVIDIA_API_KEY;
 
     const systemPrompt = `You are a Senior Curriculum & Knowledge Graph Architect for ARC (Adaptive Reasoning Model), an adaptive learning system.
 Analyze the following learning topic and return a STRICT JSON object containing:
@@ -48,51 +39,88 @@ Analyze the following learning topic and return a STRICT JSON object containing:
    - "rubricKeyPoints": array of key criteria for evaluation
    - "sampleSolution": brief reference solution
    - "isPrerequisiteCheck": boolean (true for foundational/diagnostic questions)
-   - "targetPrerequisiteOf": optional target concept ID if this question tests a prerequisite
+   - "targetPrerequisiteOf": optional target concept ID if this question tests a prerequisite`;
 
-Respond with valid JSON ONLY. Do NOT wrap in markdown code fences.`;
+    // Try Gemini first if available
+    if (geminiKey) {
+      try {
+        const ai = new GoogleGenAI({
+          apiKey: geminiKey,
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build',
+            },
+          },
+        });
 
-    const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'nvidia/nemotron-3-ultra-550b-a55b',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Generate a structured adaptive curriculum for: "${topic}"` },
-        ],
-        temperature: 0.2,
-        max_tokens: 2500,
-      }),
-    });
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: `Topic: "${topic}". ${systemPrompt}`,
+          config: {
+            responseMimeType: 'application/json',
+            temperature: 0.2,
+          },
+        });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.warn('NVIDIA API returned error for analyze-lesson:', errText);
-      return Response.json(generateFallbackCurriculum(topic));
+        const text = response.text || '';
+        const parsed: LessonData = JSON.parse(text);
+        parsed.concepts = parsed.concepts.map((c) => ({
+          ...c,
+          confidence: 0.5,
+          importance: Math.min(5, Math.max(1, Number(c.importance) || 3)),
+        }));
+        return Response.json(parsed);
+      } catch (geminiErr) {
+        console.warn('Gemini curriculum generation error, trying fallback:', geminiErr);
+      }
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || '';
-    
-    // Clean potential markdown blocks
-    const cleaned = content.replace(/```json/gi, '').replace(/```/g, '').trim();
-    try {
-      const parsed: LessonData = JSON.parse(cleaned);
-      // Ensure all initial confidences are 0.5
-      parsed.concepts = parsed.concepts.map(c => ({
-        ...c,
-        confidence: 0.5,
-        importance: Math.min(5, Math.max(1, Number(c.importance) || 3)),
-      }));
-      return Response.json(parsed);
-    } catch (parseError) {
-      console.warn('Could not parse model response as JSON:', parseError, content);
-      return Response.json(generateFallbackCurriculum(topic));
+    // Try NVIDIA if available
+    if (nvidiaKey) {
+      try {
+        const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${nvidiaKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'nvidia/nemotron-3-ultra-550b-a55b',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: `Generate a structured adaptive curriculum for: "${topic}"` },
+            ],
+            temperature: 0.2,
+            max_tokens: 2500,
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const content = data.choices?.[0]?.message?.content || '';
+          const cleaned = content.replace(/```json/gi, '').replace(/```/g, '').trim();
+          const parsed: LessonData = JSON.parse(cleaned);
+          parsed.concepts = parsed.concepts.map((c) => ({
+            ...c,
+            confidence: 0.5,
+            importance: Math.min(5, Math.max(1, Number(c.importance) || 3)),
+          }));
+          return Response.json(parsed);
+        }
+      } catch (nvidiaErr) {
+        console.warn('NVIDIA lesson generation error:', nvidiaErr);
+      }
     }
+
+    // Check if topic matches one of the rich default curricula
+    const matched = Object.values(DEFAULT_CURRICULA).find(
+      (c: LessonData) => c.topic.toLowerCase().includes(topic.toLowerCase())
+    );
+    if (matched) {
+      return Response.json(matched);
+    }
+
+    return Response.json(generateFallbackCurriculum(topic));
   } catch (error) {
     console.error('Error in analyze-lesson route:', error);
     return Response.json(
@@ -148,65 +176,69 @@ function generateFallbackCurriculum(topic: string): LessonData {
       { source: 'c-transformations', target: 'c-determinants', relation: 'Determinant measures transformation scaling' },
       { source: 'c-transformations', target: 'c-eigenvalues', relation: 'Eigen analysis describes invariant axes' },
       { source: 'c-determinants', target: 'c-eigenvalues', relation: 'Characteristic polynomial det(A - lambda*I) = 0' },
-      { source: 'c-eigenvalues', target: 'c-diagonalization', relation: 'Eigenbasis forms diagonalizing matrix P' },
+      { source: 'c-eigenvalues', target: 'c-diagonalization', relation: 'Eigenbasis diagonalizes matrix operator' },
     ],
     questions: [
       {
-        id: 'q-la-1',
+        id: 'q-foundations-1',
         conceptId: 'c-foundations',
         conceptName: 'Foundational Vectors & Spaces',
         difficulty: 'foundational',
-        prompt: 'Determine whether the vectors v1 = [1, 2] and v2 = [2, 4] are linearly independent. Explain your reasoning.',
-        rubricKeyPoints: ['Check if v2 is a scalar multiple of v1 (v2 = 2 * v1)', 'Conclude they are linearly dependent'],
-        sampleSolution: 'Since v2 = 2 * v1, the vectors are scalar multiples and therefore linearly dependent.',
+        prompt: 'Determine whether the vectors v1 = [1, 2, 0], v2 = [0, 1, 1], and v3 = [1, 0, -2] are linearly independent. Show your scalar equation c1*v1 + c2*v2 + c3*v3 = 0 setup and row reduction steps.',
+        rubricKeyPoints: [
+          'Set up vector equation c1*v1 + c2*v2 + c3*v3 = 0',
+          'Form augmented matrix or system of equations',
+          'Show row echelon reduction or compute non-zero determinant',
+          'Conclude independence or dependence based on pivot positions',
+        ],
+        sampleSolution: 'Set up matrix [ [1,0,1], [2,1,0], [0,1,-2] ]. Row reduce R2 -> R2 - 2R1: [ [1,0,1], [0,1,-2], [0,1,-2] ]. R3 -> R3 - R2 gives row of zeros: [0, 0, 0]. Free variable exists, so vectors are linearly dependent (v3 = v1 - 2*v2).',
         isPrerequisiteCheck: true,
-        targetPrerequisiteOf: 'c-transformations',
       },
       {
-        id: 'q-la-2',
+        id: 'q-transformations-1',
         conceptId: 'c-transformations',
         conceptName: 'Linear Transformations & Matrices',
         difficulty: 'intermediate',
-        prompt: 'Given matrix A = [[2, 1], [0, 3]], compute the transformation of vector x = [4, -1].',
-        rubricKeyPoints: ['Multiply row 1: 2(4) + 1(-1) = 7', 'Multiply row 2: 0(4) + 3(-1) = -3', 'Result is [7, -3]'],
-        sampleSolution: 'A*x = [2(4)+1(-1), 0(4)+3(-1)] = [7, -3].',
+        prompt: 'Find the standard 2x2 matrix for a linear transformation T: R^2 -> R^2 that first reflects vectors across the x-axis, then rotates them counterclockwise by 90 degrees.',
+        rubricKeyPoints: [
+          'Find image of standard basis vector e1 = [1, 0]',
+          'Find image of standard basis vector e2 = [0, 1]',
+          'Combine column vectors into transformation matrix [T(e1) T(e2)]',
+          'Verify matrix multiplication order',
+        ],
+        sampleSolution: 'Reflection matrix Rx = [[1, 0], [0, -1]]. Rotation matrix R90 = [[0, -1], [1, 0]]. Composite matrix A = R90 * Rx = [[0, 1], [1, 0]].',
+        isPrerequisiteCheck: false,
       },
       {
-        id: 'q-la-3',
+        id: 'q-determinants-1',
         conceptId: 'c-determinants',
         conceptName: 'Determinants & Invertibility',
-        difficulty: 'foundational',
-        prompt: 'Calculate the determinant of matrix M = [[3, 2], [1, 4]]. Is M invertible?',
-        rubricKeyPoints: ['det(M) = ad - bc = (3)(4) - (2)(1) = 12 - 2 = 10', 'Since det(M) ≠ 0, M is invertible'],
-        sampleSolution: 'det(M) = 3*4 - 2*1 = 10. Because det(M) ≠ 0, M is invertible.',
+        difficulty: 'intermediate',
+        prompt: 'Compute the determinant of matrix M = [[3, 2], [1, 4]] and explain geometrically how M scales areas in R^2.',
+        rubricKeyPoints: [
+          'Use formula det = ad - bc',
+          'Calculate 3*4 - 2*1 = 10',
+          'Explain that area of any 2D region is scaled by a factor of 10',
+          'State orientation is preserved since det > 0',
+        ],
+        sampleSolution: 'det(M) = (3)(4) - (2)(1) = 12 - 2 = 10. Geometrically, M scales any planar region area by a factor of 10 while preserving orientation (since det > 0).',
         isPrerequisiteCheck: true,
         targetPrerequisiteOf: 'c-eigenvalues',
       },
       {
-        id: 'q-la-4',
+        id: 'q-eigenvalues-1',
         conceptId: 'c-eigenvalues',
         conceptName: 'Eigenvalues & Eigenvectors',
         difficulty: 'advanced',
-        prompt: 'Find the eigenvalues of A = [[4, 2], [1, 3]] by solving det(A - lambda*I) = 0.',
+        prompt: 'Find the eigenvalues and corresponding eigenvectors for the matrix A = [[4, 1], [2, 3]]. Show your characteristic equation det(A - lambda*I) = 0 steps.',
         rubricKeyPoints: [
-          'Characteristic equation: (4 - lambda)(3 - lambda) - 2 = 0',
-          'lambda^2 - 7lambda + 12 - 2 = lambda^2 - 7lambda + 10 = 0',
-          'Factor: (lambda - 5)(lambda - 2) = 0',
-          'Eigenvalues: lambda1 = 5, lambda2 = 2',
+          'Set up det([[4-lambda, 1], [2, 3-lambda]]) = 0',
+          'Expand characteristic polynomial: lambda^2 - 7*lambda + 10 = 0',
+          'Factor into (lambda - 5)(lambda - 2) = 0 to get eigenvalues lambda = 5 and lambda = 2',
+          'Solve (A - lambda*I)v = 0 for each eigenvalue to find eigenvector basis',
         ],
-        sampleSolution: 'det(A - λI) = (4-λ)(3-λ) - 2 = λ^2 - 7λ + 10 = (λ-5)(λ-2) = 0. Eigenvalues are λ = 5 and λ = 2.',
-      },
-      {
-        id: 'q-la-5',
-        conceptId: 'c-diagonalization',
-        conceptName: 'Matrix Diagonalization & Applications',
-        difficulty: 'advanced',
-        prompt: 'If a 2x2 matrix has eigenvalues 5 and 2 with independent eigenvectors, describe how to construct matrix P such that A = P D P^(-1).',
-        rubricKeyPoints: [
-          'Form columns of P using the eigenvectors v1 and v2 corresponding to 5 and 2',
-          'Set D = [[5, 0], [0, 2]]',
-        ],
-        sampleSolution: 'P is constructed with the eigenvectors as its columns: P = [v1 | v2]. Then D = diag(5, 2) and A = P D P^(-1).',
+        sampleSolution: 'Characteristic polynomial: (4-L)(3-L) - 2 = L^2 - 7L + 10 = (L - 5)(L - 2) = 0. Eigenvalues: lambda1 = 5, lambda2 = 2. For lambda1 = 5: [-1, 1; 2, -2]v = 0 -> v1 = [1, 1]^T. For lambda2 = 2: [2, 1; 2, 1]v = 0 -> v2 = [-1, 2]^T.',
+        isPrerequisiteCheck: false,
       },
     ],
   };

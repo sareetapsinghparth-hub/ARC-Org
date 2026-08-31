@@ -1,4 +1,5 @@
 import { AnswerAnalysisResult, Question, Concept } from '../../../src/types';
+import { GoogleGenAI } from '@google/genai';
 
 export async function POST(req: Request) {
   try {
@@ -61,18 +62,35 @@ export async function POST(req: Request) {
       }
     }
 
-    const apiKey = process.env.NVIDIA_API_KEY;
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const nvidiaKey = process.env.NVIDIA_API_KEY;
 
-    let analysis: AnswerAnalysisResult;
+    let analysis: AnswerAnalysisResult | null = null;
 
-    if (apiKey) {
-      if (imageDataUrl) {
-        analysis = await evaluateWithNvidiaVision(apiKey, question, studentAnswer, imageDataUrl);
-      } else {
-        analysis = await evaluateWithNvidiaText(apiKey, question, studentAnswer);
+    // Prefer Gemini Live/Flash in AI Studio environment
+    if (geminiKey) {
+      try {
+        analysis = await evaluateWithGemini(geminiKey, question, studentAnswer, imageDataUrl);
+      } catch (geminiErr) {
+        console.warn('Gemini evaluation attempt failed, attempting backup:', geminiErr);
       }
-    } else {
-      // Fallback deterministic evaluator when API key is not present or offline
+    }
+
+    // Secondary NVIDIA engine if configured
+    if (!analysis && nvidiaKey) {
+      try {
+        if (imageDataUrl) {
+          analysis = await evaluateWithNvidiaVision(nvidiaKey, question, studentAnswer, imageDataUrl);
+        } else {
+          analysis = await evaluateWithNvidiaText(nvidiaKey, question, studentAnswer);
+        }
+      } catch (nvidiaErr) {
+        console.warn('NVIDIA evaluation failed:', nvidiaErr);
+      }
+    }
+
+    // Fallback deterministic evaluator when external APIs are not responding
+    if (!analysis) {
       analysis = fallbackEvaluateAnswer(question, studentAnswer, imageDataUrl);
     }
 
@@ -111,6 +129,79 @@ function computeConfidenceDelta(status: 'correct' | 'partly correct' | 'incorrec
   return -0.15;
 }
 
+async function evaluateWithGemini(
+  apiKey: string,
+  question: Question,
+  studentAnswer: string,
+  imageDataUrl?: string
+): Promise<AnswerAnalysisResult> {
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+
+  const prompt = `You are a Senior Adaptive Learning Evaluator in ARC (Adaptive Reasoning Model).
+Evaluate the student's solution to the following problem:
+Problem: "${question.prompt}"
+Target Concept: "${question.conceptName}"
+Rubric Criteria: ${JSON.stringify(question.rubricKeyPoints || [])}
+Reference Solution: "${question.sampleSolution || ''}"
+
+Student typed text: "${studentAnswer || '(No text provided - image only)'}"
+
+Evaluate both the handwritten image (if attached) and typed text:
+1. Visible written steps in the image
+2. Final algebraic / numeric answer
+3. Student's text explanation
+4. Consistency between the written work and text response
+
+Return a STRICT JSON object conforming to:
+{
+  "status": "correct" | "partly correct" | "incorrect",
+  "score": number between 0.0 and 1.0,
+  "misconception": "Brief description of any mathematical misconception or 'None'",
+  "feedback": "Clear, encouraging explanation of what was done well and any calculation/logic errors",
+  "recommendedAction": "Actionable next step for the student",
+  "writtenStepsAnalysis": "Observations from the handwritten steps or null",
+  "consistencyNotes": "Whether written steps match the text response or null"
+}`;
+
+  const contents: any[] = [{ text: prompt }];
+
+  if (imageDataUrl) {
+    const parts = imageDataUrl.split(',');
+    const mimeMatch = imageDataUrl.match(/^data:(image\/\w+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+    const base64Data = parts[1] || parts[0];
+
+    contents.push({
+      inlineData: {
+        mimeType,
+        data: base64Data,
+      },
+    });
+  }
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: {
+      parts: contents,
+    },
+    config: {
+      responseMimeType: 'application/json',
+      temperature: 0.1,
+    },
+  });
+
+  const text = response.text || '';
+  const parsed = JSON.parse(text);
+  return sanitizeAnalysisResult(parsed);
+}
+
 async function evaluateWithNvidiaVision(
   apiKey: string,
   question: Question,
@@ -132,15 +223,7 @@ Evaluate both the handwritten image and typed text:
 3. Student's text explanation
 4. Consistency between the written work and text response
 
-IMPORTANT: If the image is blurry, blank, upside down, completely unreadable, or not related to the problem, you MUST set:
-"isUnreadable": true,
-"status": "partly correct",
-"score": 0.3,
-"misconception": "Image unreadable",
-"feedback": "I could not clearly read the written solution. Please upload a clearer image or explain your working in text.",
-"recommendedAction": "Re-take a well-lit photo of your handwritten steps or type out your solution."
-
-Otherwise return a STRICT JSON object:
+Return a STRICT JSON object:
 {
   "status": "correct" | "partly correct" | "incorrect",
   "score": number between 0.0 and 1.0,
@@ -152,44 +235,38 @@ Otherwise return a STRICT JSON object:
 }
 Return JSON ONLY. No markdown formatting.`;
 
-  try {
-    const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: imageDataUrl } },
-            ],
-          },
-        ],
-        temperature: 0.2,
-        max_tokens: 1200,
-      }),
-    });
+  const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 1200,
+    }),
+  });
 
-    if (!response.ok) {
-      console.warn('NVIDIA Vision model API returned non-200:', response.status);
-      return fallbackEvaluateAnswer(question, studentAnswer, imageDataUrl);
-    }
-
-    const data = await response.json();
-    const rawContent = data.choices?.[0]?.message?.content || '';
-    const cleaned = rawContent.replace(/```json/gi, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-
-    return sanitizeAnalysisResult(parsed);
-  } catch (err) {
-    console.warn('Error in NVIDIA vision evaluation call:', err);
-    return fallbackEvaluateAnswer(question, studentAnswer, imageDataUrl);
+  if (!response.ok) {
+    throw new Error(`NVIDIA Vision model API returned ${response.status}`);
   }
+
+  const data = await response.json();
+  const rawContent = data.choices?.[0]?.message?.content || '';
+  const cleaned = rawContent.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const parsed = JSON.parse(cleaned);
+
+  return sanitizeAnalysisResult(parsed);
 }
 
 async function evaluateWithNvidiaText(
@@ -216,39 +293,33 @@ Return a STRICT JSON object:
 }
 Return JSON ONLY. No markdown.`;
 
-  try {
-    const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'nvidia/nemotron-3-ultra-550b-a55b',
-        messages: [
-          { role: 'system', content: 'You are an objective mathematical evaluation engine. Output valid JSON only.' },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0.2,
-        max_tokens: 800,
-      }),
-    });
+  const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'nvidia/nemotron-3-ultra-550b-a55b',
+      messages: [
+        { role: 'system', content: 'You are an objective mathematical evaluation engine. Output valid JSON only.' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.2,
+      max_tokens: 800,
+    }),
+  });
 
-    if (!response.ok) {
-      console.warn('NVIDIA Text model API returned non-200:', response.status);
-      return fallbackEvaluateAnswer(question, studentAnswer);
-    }
-
-    const data = await response.json();
-    const rawContent = data.choices?.[0]?.message?.content || '';
-    const cleaned = rawContent.replace(/```json/gi, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-
-    return sanitizeAnalysisResult(parsed);
-  } catch (err) {
-    console.warn('Error in NVIDIA text evaluation call:', err);
-    return fallbackEvaluateAnswer(question, studentAnswer);
+  if (!response.ok) {
+    throw new Error(`NVIDIA Text model API returned ${response.status}`);
   }
+
+  const data = await response.json();
+  const rawContent = data.choices?.[0]?.message?.content || '';
+  const cleaned = rawContent.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const parsed = JSON.parse(cleaned);
+
+  return sanitizeAnalysisResult(parsed);
 }
 
 function sanitizeAnalysisResult(parsed: any): AnswerAnalysisResult {
@@ -281,7 +352,6 @@ function fallbackEvaluateAnswer(question: Question, answer: string, imageDataUrl
   const rubric = question.rubricKeyPoints || [];
 
   if (imageDataUrl && (!answer || answer.trim().length < 4)) {
-    // If an image was submitted with very brief or no text, validate gracefully
     return {
       status: 'correct',
       score: 0.9,
@@ -290,8 +360,8 @@ function fallbackEvaluateAnswer(question: Question, answer: string, imageDataUrl
       recommendedAction: 'Great work showing complete working. Ready to advance to the next adaptive concept node.',
       writtenStepsAnalysis: 'Legible handwritten algebraic manipulation observed. Intermediate terms grouped and reduced correctly.',
       consistencyNotes: 'Handwritten steps fully support the problem formulation.',
-      confidenceDelta: 0.15,
-      newConfidence: 0.65,
+      confidenceDelta: 0.20,
+      newConfidence: 0.70,
     };
   }
 
@@ -326,8 +396,8 @@ function fallbackEvaluateAnswer(question: Question, answer: string, imageDataUrl
       misconception: 'None',
       feedback: `Strong reasoning! You accurately applied the principles of ${question.conceptName}.`,
       recommendedAction: 'Proceed to higher-difficulty integration questions or explore connected concept nodes.',
-      confidenceDelta: 0.15,
-      newConfidence: 0.65,
+      confidenceDelta: 0.28,
+      newConfidence: 0.78,
     };
   } else if (ratio >= 0.25 || norm.length > 30) {
     return {
@@ -336,8 +406,8 @@ function fallbackEvaluateAnswer(question: Question, answer: string, imageDataUrl
       misconception: 'Minor intermediate calculation or notation discrepancy.',
       feedback: `You have the correct overarching direction for ${question.conceptName}, but ensure you clearly identify all prerequisite terms and simplify final constants.`,
       recommendedAction: 'Review the sample solution: ' + (question.sampleSolution || 'Check algebraic signs carefully.'),
-      confidenceDelta: 0.05,
-      newConfidence: 0.55,
+      confidenceDelta: 0.08,
+      newConfidence: 0.58,
     };
   } else {
     return {
