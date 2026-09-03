@@ -30,6 +30,8 @@ import {
   RotateCcw,
   Gauge,
   Check,
+  MessageSquare,
+  GitFork,
 } from 'lucide-react';
 
 interface AdaptiveAssessmentProps {
@@ -54,6 +56,7 @@ interface AdaptiveAssessmentProps {
   onNextQuestion: () => void;
   onRetry: () => void;
   onOpenVoiceTutor?: () => void;
+  onOpenAiChat?: () => void;
 }
 
 export function AdaptiveAssessment({
@@ -78,9 +81,11 @@ export function AdaptiveAssessment({
   onNextQuestion,
   onRetry,
   onOpenVoiceTutor,
+  onOpenAiChat,
 }: AdaptiveAssessmentProps) {
   const [answerText, setAnswerText] = useState('');
   const [selectedImage, setSelectedImage] = useState<SelectedImageInfo | null>(null);
+  const [showRationale, setShowRationale] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -106,48 +111,54 @@ export function AdaptiveAssessment({
 
   // If session is completed or all targets reached
   if (isSessionCompleted) {
-    const confValues = concepts.map((c) => confidenceMap[c.id] ?? 0.5);
+    const assessedConcepts = concepts.filter(
+      (c) => confidenceMap[c.id] !== undefined && confidenceMap[c.id] !== null
+    );
+    const assessedCount = assessedConcepts.length;
+    const confValues = assessedConcepts.map((c) => confidenceMap[c.id] as number);
     const avgConfidence =
-      confValues.length > 0
-        ? Math.round((confValues.reduce((a, b) => a + b, 0) / confValues.length) * 100)
-        : 50;
-    const masteredCount = confValues.filter((c) => c >= 0.7).length;
+      assessedCount > 0
+        ? Math.round((confValues.reduce((a, b) => a + b, 0) / assessedCount) * 100)
+        : null;
+    const masteredCount = confValues.filter((c) => c >= 0.75).length;
 
     return (
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 sm:p-8 text-center backdrop-blur-md shadow-2xl space-y-6 animate-fadeIn">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500/20 via-emerald-500/20 to-indigo-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto shadow-lg shadow-emerald-950/50">
+      <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 text-center shadow-md space-y-6 animate-fadeIn">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-100 via-emerald-100 to-indigo-100 border border-emerald-300 text-emerald-600 flex items-center justify-center mx-auto shadow-xs">
           <Trophy className="w-8 h-8" />
         </div>
 
         <div className="space-y-2 max-w-md mx-auto">
           <div className="flex items-center justify-center gap-2">
-            <span className="text-[11px] font-mono font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-3 py-0.5 rounded-full">
+            <span className="text-[11px] font-mono font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-0.5 rounded-full">
               Session Goal Completed
             </span>
           </div>
-          <h3 className="text-xl sm:text-2xl font-bold text-white">
+          <h3 className="text-xl sm:text-2xl font-bold text-slate-900">
             Concise Diagnostic Complete!
           </h3>
-          <p className="text-xs sm:text-sm text-slate-300">
-            Great job! You answered the targeted diagnostic questions without repetitive drilling. Your adaptive mastery profile has been calibrated.
+          <p className="text-xs sm:text-sm text-slate-600">
+            Great job! You answered targeted diagnostic questions without repetitive drilling. Your adaptive mastery profile has been calibrated.
           </p>
         </div>
 
         {/* Summary Metric Badges */}
         <div className="grid grid-cols-3 gap-3 max-w-lg mx-auto text-center font-mono">
-          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3">
-            <div className="text-[11px] text-slate-400">Mastered</div>
-            <div className="text-lg font-bold text-emerald-400">
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <div className="text-[11px] text-slate-500">Mastered</div>
+            <div className="text-lg font-bold text-emerald-600">
               {masteredCount} / {concepts.length}
             </div>
           </div>
-          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3">
-            <div className="text-[11px] text-slate-400">Avg Confidence</div>
-            <div className="text-lg font-bold text-indigo-300">{avgConfidence}%</div>
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <div className="text-[11px] text-slate-500">Assessed Mastery</div>
+            <div className="text-lg font-bold text-indigo-600">
+              {avgConfidence !== null ? `${avgConfidence}%` : 'Pending'}
+            </div>
           </div>
-          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3">
-            <div className="text-[11px] text-slate-400">Questions Asked</div>
-            <div className="text-lg font-bold text-amber-300">{sessionQuestionsAnswered}</div>
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <div className="text-[11px] text-slate-500">Questions Answered</div>
+            <div className="text-lg font-bold text-amber-600">{sessionQuestionsAnswered}</div>
           </div>
         </div>
 
@@ -156,7 +167,7 @@ export function AdaptiveAssessment({
           <button
             type="button"
             onClick={onRestartSession}
-            className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-2 cursor-pointer"
+            className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-sm transition-all flex items-center gap-2 cursor-pointer"
           >
             <RotateCcw className="w-4 h-4" />
             <span>Start New Quick Check (3 Qs)</span>
@@ -167,9 +178,9 @@ export function AdaptiveAssessment({
               onPacingChange('comprehensive');
               onNextQuestion();
             }}
-            className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs sm:text-sm font-semibold border border-slate-700 transition-all flex items-center gap-2 cursor-pointer"
+            className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs sm:text-sm font-semibold border border-slate-300 transition-all flex items-center gap-2 cursor-pointer"
           >
-            <Sparkles className="w-4 h-4 text-indigo-400" />
+            <Sparkles className="w-4 h-4 text-indigo-600" />
             <span>Practice Additional Questions</span>
           </button>
         </div>
@@ -179,15 +190,15 @@ export function AdaptiveAssessment({
 
   if (!currentQuestion) {
     return (
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-8 text-center backdrop-blur-md shadow-xl flex flex-col items-center justify-center">
-        <Sparkles className="w-10 h-10 text-indigo-400 mb-3 animate-bounce" />
-        <h3 className="text-lg font-semibold text-slate-100 mb-1">Adaptive Diagnostic Ready</h3>
-        <p className="text-sm text-slate-400 max-w-md mb-4">
+      <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center shadow-sm flex flex-col items-center justify-center">
+        <Sparkles className="w-10 h-10 text-indigo-600 mb-3 animate-bounce" />
+        <h3 className="text-lg font-semibold text-slate-900 mb-1">Adaptive Diagnostic Ready</h3>
+        <p className="text-sm text-slate-600 max-w-md mb-4">
           Ready to diagnose your understanding with a short, high-yield question set.
         </p>
         <button
           onClick={onNextQuestion}
-          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-medium shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-2 cursor-pointer"
+          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-medium shadow-sm transition-all flex items-center gap-2 cursor-pointer"
         >
           Begin Quick Diagnostic <ArrowRight className="w-4 h-4" />
         </button>
@@ -196,60 +207,59 @@ export function AdaptiveAssessment({
   }
 
   const difficultyColors = {
-    foundational: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-    intermediate: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
-    advanced: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+    foundational: 'bg-blue-50 text-blue-700 border-blue-200',
+    intermediate: 'bg-purple-50 text-purple-700 border-purple-200',
+    advanced: 'bg-amber-50 text-amber-800 border-amber-200',
   };
 
   return (
-    <div className="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden backdrop-blur-md shadow-2xl flex flex-col h-full">
-      {/* Pacing & Progress Header */}
-      <div className="p-3.5 sm:p-4 bg-slate-950/70 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
-        {/* Question Counter & Pacing Badge */}
+    <div className="bg-white border border-slate-200/90 rounded-2xl overflow-hidden shadow-xs flex flex-col h-full">
+      {/* Pacing & Progress Sub-Header */}
+      <div className="px-4 py-3 bg-slate-50/70 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-3">
+        {/* Question Counter & Difficulty */}
         <div className="flex items-center gap-2.5">
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-indigo-300 font-mono text-xs font-bold">
-            <Gauge className="w-3.5 h-3.5 text-indigo-400" />
-            <span>
-              {sessionPacing === 'comprehensive'
-                ? `Question ${sessionQuestionsAnswered + 1}`
-                : `Question ${currentQuestionNumber} of ${targetQuestionBudget}`}
-            </span>
-          </div>
-
-          <span className="text-[11px] text-slate-400 hidden sm:inline">
-            {sessionPacing === 'rapid'
-              ? '⚡ Quick Diagnostic (3 Qs Max)'
-              : sessionPacing === 'standard'
-              ? '🎯 Standard Assessment (5 Qs)'
-              : '📚 Full Curriculum'}
+          <span className="text-xs font-semibold text-slate-800">
+            {sessionPacing === 'comprehensive'
+              ? `Question ${sessionQuestionsAnswered + 1}`
+              : `Question ${currentQuestionNumber} of ${targetQuestionBudget}`}
           </span>
+          <span className="text-slate-300">•</span>
+          <span
+            className={`px-2 py-0.5 rounded-md text-[11px] font-medium border ${
+              difficultyColors[currentQuestion.difficulty]
+            }`}
+          >
+            {currentQuestion.difficulty}
+          </span>
+          {currentQuestion.isPrerequisiteCheck && (
+            <span className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-rose-50 text-rose-700 border border-rose-200">
+              Prerequisite
+            </span>
+          )}
         </div>
 
-        {/* Pacing Selector Controls */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] text-slate-400 mr-1 hidden md:inline">Mode:</span>
-          <div className="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px] font-medium">
+        {/* Pacing Mode Selector & Finish Action */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center bg-slate-100 p-0.5 rounded-lg text-[11px] font-medium text-slate-600">
             <button
               type="button"
               onClick={() => onPacingChange('rapid')}
               className={`px-2 py-0.5 rounded-md transition-all cursor-pointer ${
                 sessionPacing === 'rapid'
-                  ? 'bg-indigo-600 text-white font-bold shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-white text-indigo-600 font-semibold shadow-xs'
+                  : 'hover:text-slate-900'
               }`}
-              title="Fast 3-question diagnostic to avoid fatigue"
             >
-              Quick (3 Qs)
+              Quick (3)
             </button>
             <button
               type="button"
               onClick={() => onPacingChange('standard')}
               className={`px-2 py-0.5 rounded-md transition-all cursor-pointer ${
                 sessionPacing === 'standard'
-                  ? 'bg-indigo-600 text-white font-bold shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-white text-indigo-600 font-semibold shadow-xs'
+                  : 'hover:text-slate-900'
               }`}
-              title="Standard 5-question review"
             >
               Standard (5)
             </button>
@@ -258,104 +268,74 @@ export function AdaptiveAssessment({
               onClick={() => onPacingChange('comprehensive')}
               className={`px-2 py-0.5 rounded-md transition-all cursor-pointer ${
                 sessionPacing === 'comprehensive'
-                  ? 'bg-indigo-600 text-white font-bold shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-white text-indigo-600 font-semibold shadow-xs'
+                  : 'hover:text-slate-900'
               }`}
-              title="Full thorough practice"
             >
               Full
             </button>
           </div>
 
-          {/* Wrap Up Session Button */}
           {sessionQuestionsAnswered > 0 && (
             <button
               type="button"
               onClick={onFinishSessionEarly}
-              className="px-2.5 py-1 text-[11px] font-medium text-slate-400 hover:text-amber-300 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
-              title="Conclude diagnostic session and review mastery now"
+              className="px-2 py-0.5 text-[11px] text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+              title="Conclude diagnostic session"
             >
-              <Flag className="w-3 h-3 text-amber-400" />
-              <span className="hidden sm:inline">Finish Now</span>
+              Finish Now
             </button>
           )}
         </div>
       </div>
 
-      {/* Target Concept & Diagnostic Metadata */}
-      <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-950/40">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-          <div className="flex items-center gap-2">
-            <span
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wider border ${
-                difficultyColors[currentQuestion.difficulty]
-              }`}
-            >
-              {currentQuestion.difficulty}
+      {/* Target Concept & Subtle Adaptive Rationale Accordion */}
+      <div className="px-5 py-3 border-b border-slate-100 bg-white flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="flex items-center gap-2 text-slate-600">
+          <span className="font-medium">Target Concept:</span>
+          <span className="font-semibold text-slate-900">{currentQuestion.conceptName}</span>
+          {confidenceMap[currentQuestion.conceptId] !== undefined ? (
+            <span className="text-slate-500 font-mono text-[11px] bg-slate-100 px-2 py-0.5 rounded">
+              {Math.round((confidenceMap[currentQuestion.conceptId] || 0) * 100)}% mastery
             </span>
-            {currentQuestion.isPrerequisiteCheck && (
-              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/20 flex items-center gap-1">
-                <Layers className="w-3 h-3" />
-                Prerequisite Diagnostic
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
-            <span>Target Concept:</span>
-            <span className="text-indigo-300 font-semibold">{currentQuestion.conceptName}</span>
-            <span className="text-slate-600">•</span>
-            <span className="text-slate-300">
-              c = {conceptConfidence.toFixed(2)} ({Math.round(conceptConfidence * 100)}%)
+          ) : (
+            <span className="text-indigo-700 font-mono text-[11px] bg-indigo-50 px-2.5 py-0.5 rounded border border-indigo-200">
+              Initial Diagnostic (Unassessed)
             </span>
-          </div>
+          )}
         </div>
 
-        {/* Adaptive Selection Rationale Banner */}
         {selectionMeta && (
-          <div className="mt-2 bg-indigo-950/40 border border-indigo-500/30 rounded-xl px-3 py-2 text-xs text-indigo-200 flex items-start gap-2">
-            <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
-            <div className="leading-relaxed">
-              <span className="font-semibold text-indigo-300">Adaptive Rationale: </span>
-              {selectionMeta.reason}
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowRationale(!showRationale)}
+            className="text-[11px] text-indigo-600 hover:text-indigo-800 flex items-center gap-1 font-medium cursor-pointer transition-colors"
+          >
+            <Info className="w-3.5 h-3.5" />
+            <span>{showRationale ? 'Hide rationale' : 'Why this question?'}</span>
+          </button>
         )}
       </div>
 
-      {/* Main Question & Solution Area */}
-      <div className="p-4 sm:p-6 flex-1 overflow-y-auto space-y-5">
-        {/* Question Prompt */}
-        <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 sm:p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3 flex-1">
-              <div className="w-7 h-7 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
-                Q
-              </div>
-              <div className="space-y-2 flex-1">
-                <p className="text-slate-100 text-sm sm:text-base font-medium leading-relaxed whitespace-pre-wrap">
-                  {currentQuestion.prompt}
-                </p>
-                {currentQuestion.context && (
-                  <p className="text-xs text-slate-400 italic bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
-                    Context: {currentQuestion.context}
-                  </p>
-                )}
-              </div>
-            </div>
+      {showRationale && selectionMeta && (
+        <div className="mx-5 mb-2 p-3 bg-indigo-50/60 border border-indigo-100 rounded-xl text-xs text-indigo-900 animate-fadeIn">
+          <span className="font-semibold text-indigo-800">Adaptive Rationale: </span>
+          {selectionMeta.reason}
+        </div>
+      )}
 
-            {/* Quick Live Voice Tutor Launch Button */}
-            {onOpenVoiceTutor && (
-              <button
-                type="button"
-                onClick={onOpenVoiceTutor}
-                className="px-3 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 rounded-xl text-xs font-medium flex items-center gap-1.5 shrink-0 transition-colors shadow-sm cursor-pointer"
-                title="Talk to AI tutor in real-time with Live API"
-              >
-                <Radio className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
-                <span className="hidden sm:inline">Voice Tutor (Live API)</span>
-                <span className="sm:hidden">Voice</span>
-              </button>
+      {/* Main Question & Solution Area */}
+      <div className="p-5 sm:p-6 flex-1 overflow-y-auto space-y-5">
+        {/* Question Prompt */}
+        <div className="bg-slate-50/80 border border-slate-200/80 rounded-xl p-4 sm:p-5">
+          <div className="space-y-2">
+            <p className="text-slate-900 text-sm sm:text-base font-medium leading-relaxed whitespace-pre-wrap">
+              {currentQuestion.prompt}
+            </p>
+            {currentQuestion.context && (
+              <p className="text-xs text-slate-500 italic pt-1">
+                Context: {currentQuestion.context}
+              </p>
             )}
           </div>
         </div>
@@ -364,16 +344,15 @@ export function AdaptiveAssessment({
         {!feedback && (
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+              <div className="flex items-center justify-between gap-2 mb-2">
                 <label
                   htmlFor="answer-textarea"
-                  className="text-xs font-semibold text-slate-300 flex items-center gap-1.5"
+                  className="text-xs font-semibold text-slate-700"
                 >
-                  <FileText className="w-3.5 h-3.5 text-indigo-400" />
-                  Your Working & Reasoning
+                  Your Answer & Working Steps
                 </label>
 
-                {/* Microphone Dictate Button using gemini-3.5-transcribe */}
+                {/* Microphone Dictate Button */}
                 <AudioTranscribeButton
                   onTranscriptionComplete={handleTranscriptionReceived}
                   disabled={isAnalyzing}
@@ -383,10 +362,10 @@ export function AdaptiveAssessment({
                 id="answer-textarea"
                 value={answerText}
                 onChange={(e) => setAnswerText(e.target.value)}
-                placeholder="Type your algebraic steps, or click 'Dictate Answer' (gemini-3.5-transcribe), or attach handwritten work..."
+                placeholder="Type your reasoning, step-by-step solution, or algebraic answer..."
                 rows={3}
                 disabled={isAnalyzing}
-                className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl p-3.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none transition-colors font-mono resize-y"
+                className="w-full bg-white border border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl p-3.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none transition-colors font-mono resize-y"
               />
             </div>
 
@@ -401,46 +380,44 @@ export function AdaptiveAssessment({
 
             {/* Error banner if any */}
             {error && (
-              <div className="bg-red-950/60 border border-red-800/80 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-red-300">
-                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div className="bg-red-50 border border-red-200 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-red-700">
+                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
                 <div className="flex-1">
-                  <p className="font-semibold text-red-200">Evaluation Error</p>
+                  <p className="font-semibold text-red-800">Evaluation Error</p>
                   <p>{error}</p>
                 </div>
                 <button
                   type="button"
                   onClick={onRetry}
-                  className="px-2.5 py-1 bg-red-900/60 hover:bg-red-800 text-red-200 rounded-lg text-xs font-medium transition-colors"
+                  className="px-2.5 py-1 bg-red-100 hover:bg-red-200 text-red-800 rounded-lg text-xs font-medium transition-colors cursor-pointer"
                 >
                   Retry
                 </button>
               </div>
             )}
 
-            {/* Submission & Friction-Free Agency Actions */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-slate-800/80">
-              {/* Quick Knowledge Actions to prevent irritation */}
+            {/* Actions: Fast track, skip, submit */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-slate-100">
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={onFastTrackMastery}
                   disabled={isAnalyzing}
-                  className="px-3 py-2 bg-emerald-950/50 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/60 hover:border-emerald-600 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-                  title="Already know this concept? Mark as understood without typing"
+                  className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100/80 text-emerald-800 border border-emerald-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                  title="Mark concept as mastered without typing"
                 >
-                  <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>I Know This (+30% Mastery)</span>
+                  <Zap className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>I Know This (Master Concept)</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={onSkipQuestion}
                   disabled={isAnalyzing}
-                  className="px-3 py-2 bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800 rounded-xl text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
+                  className="px-2.5 py-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
                   title="Skip to another concept"
                 >
-                  <SkipForward className="w-3.5 h-3.5" />
-                  <span>Skip</span>
+                  Skip
                 </button>
               </div>
 
@@ -449,7 +426,7 @@ export function AdaptiveAssessment({
                 type="submit"
                 id="submit-answer-btn"
                 disabled={(!answerText.trim() && !selectedImage) || isAnalyzing}
-                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl text-sm font-semibold shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-xs sm:text-sm font-semibold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
               >
                 {isAnalyzing ? (
                   <>
@@ -458,7 +435,7 @@ export function AdaptiveAssessment({
                   </>
                 ) : (
                   <>
-                    <Send className="w-4 h-4" />
+                    <Send className="w-3.5 h-3.5" />
                     <span>Submit Answer</span>
                   </>
                 )}
@@ -473,31 +450,31 @@ export function AdaptiveAssessment({
             <div
               className={`rounded-xl border p-4 sm:p-5 ${
                 feedback.status === 'correct'
-                  ? 'bg-emerald-950/40 border-emerald-500/50'
+                  ? 'bg-emerald-50/90 border-emerald-300'
                   : feedback.status === 'partly correct'
-                  ? 'bg-amber-950/40 border-amber-500/50'
-                  : 'bg-rose-950/40 border-rose-500/50'
+                  ? 'bg-amber-50/90 border-amber-300'
+                  : 'bg-rose-50/90 border-rose-300'
               }`}
             >
               {/* Status Header */}
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 pb-3 border-b border-slate-800/60">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 pb-3 border-b border-slate-200">
                 <div className="flex items-center gap-2">
                   {feedback.status === 'correct' ? (
-                    <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
                   ) : feedback.status === 'partly correct' ? (
-                    <AlertTriangle className="w-5 h-5 text-amber-400" />
+                    <AlertTriangle className="w-5 h-5 text-amber-600" />
                   ) : (
-                    <XCircle className="w-5 h-5 text-rose-400" />
+                    <XCircle className="w-5 h-5 text-rose-600" />
                   )}
-                  <span className="text-base font-bold capitalize text-slate-100">
+                  <span className="text-base font-bold capitalize text-slate-900">
                     {feedback.status} Solution
                   </span>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-700/60 text-xs font-mono">
-                    <span className="text-slate-400">Score:</span>
-                    <span className="font-bold text-slate-200">
+                  <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-lg border border-slate-200 text-xs font-mono shadow-xs">
+                    <span className="text-slate-500">Score:</span>
+                    <span className="font-bold text-slate-900">
                       {Math.round(feedback.score * 100)}%
                     </span>
                   </div>
@@ -505,8 +482,8 @@ export function AdaptiveAssessment({
                   <div
                     className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-mono font-bold ${
                       (feedback.confidenceDelta || 0) >= 0
-                        ? 'bg-emerald-500/20 text-emerald-300'
-                        : 'bg-rose-500/20 text-rose-300'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-rose-100 text-rose-800'
                     }`}
                   >
                     {(feedback.confidenceDelta || 0) >= 0 ? (
@@ -525,32 +502,56 @@ export function AdaptiveAssessment({
               {/* Feedback Body */}
               <div className="space-y-3 text-sm">
                 <div>
-                  <h5 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                  <h5 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">
                     Pedagogical Evaluation
                   </h5>
-                  <p className="text-slate-200 leading-relaxed">{feedback.feedback}</p>
+                  <p className="text-slate-800 leading-relaxed">{feedback.feedback}</p>
                 </div>
 
                 {feedback.misconception && feedback.misconception !== 'None' && (
-                  <div className="bg-slate-900/70 p-3 rounded-lg border border-slate-800 text-xs">
-                    <span className="font-semibold text-rose-300">Identified Misconception: </span>
-                    <span className="text-slate-300">{feedback.misconception}</span>
+                  <div className="bg-white p-3 rounded-lg border border-rose-200 text-xs">
+                    <span className="font-semibold text-rose-700">Identified Misconception: </span>
+                    <span className="text-slate-700">{feedback.misconception}</span>
                   </div>
                 )}
 
                 {feedback.writtenStepsAnalysis && (
-                  <div className="bg-indigo-950/40 p-3 rounded-lg border border-indigo-900/50 text-xs space-y-1">
-                    <span className="font-semibold text-indigo-300">
+                  <div className="bg-white p-3 rounded-lg border border-indigo-200 text-xs space-y-1">
+                    <span className="font-semibold text-indigo-700">
                       Handwritten Vision Inspection:{' '}
                     </span>
-                    <p className="text-slate-300">{feedback.writtenStepsAnalysis}</p>
+                    <p className="text-slate-700">{feedback.writtenStepsAnalysis}</p>
+                  </div>
+                )}
+
+                {feedback.graphUpdate && (
+                  <div className="bg-white p-3 rounded-lg border border-indigo-200 text-xs space-y-1.5 shadow-xs">
+                    <div className="flex items-center gap-1.5 font-semibold text-indigo-900">
+                      <GitFork className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>K-Graph (Prerequisite Graph) Diagnostic Update</span>
+                    </div>
+                    <p className="text-slate-700 leading-relaxed">
+                      {feedback.graphUpdate.reasoning}
+                    </p>
+                    {feedback.graphUpdate.verifiedPrereqIds && feedback.graphUpdate.verifiedPrereqIds.length > 0 && (
+                      <div className="text-emerald-700 font-medium flex items-center gap-1.5 pt-0.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Prerequisites validated in graph: {feedback.graphUpdate.verifiedPrereqIds.join(', ')}</span>
+                      </div>
+                    )}
+                    {feedback.graphUpdate.flaggedGapPrereqIds && feedback.graphUpdate.flaggedGapPrereqIds.length > 0 && (
+                      <div className="text-rose-700 font-medium flex items-center gap-1.5 pt-0.5">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>Prerequisite gaps flagged for reinforcement: {feedback.graphUpdate.flaggedGapPrereqIds.join(', ')}</span>
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {feedback.recommendedAction && (
-                  <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 text-xs">
-                    <span className="font-semibold text-amber-300">Recommended Next Step: </span>
-                    <span className="text-slate-300">{feedback.recommendedAction}</span>
+                  <div className="bg-white p-3 rounded-lg border border-amber-200 text-xs">
+                    <span className="font-semibold text-amber-800">Recommended Next Step: </span>
+                    <span className="text-slate-700">{feedback.recommendedAction}</span>
                   </div>
                 )}
               </div>
@@ -558,17 +559,17 @@ export function AdaptiveAssessment({
 
             {/* Sample Reference Solution Toggle / Accordion */}
             {currentQuestion.sampleSolution && (
-              <details className="group bg-slate-950/60 border border-slate-800 rounded-xl p-3.5 text-xs text-slate-300">
-                <summary className="font-semibold text-indigo-300 cursor-pointer flex items-center justify-between">
+              <details className="group bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-xs text-slate-700">
+                <summary className="font-semibold text-indigo-700 cursor-pointer flex items-center justify-between">
                   <span>View Reference Solution & Rubric</span>
-                  <span className="text-slate-500 group-open:rotate-180 transition-transform">▼</span>
+                  <span className="text-slate-400 group-open:rotate-180 transition-transform">▼</span>
                 </summary>
-                <div className="mt-3 pt-3 border-t border-slate-800 space-y-2">
-                  <p className="font-mono text-slate-200 bg-slate-900 p-2.5 rounded border border-slate-800">
+                <div className="mt-3 pt-3 border-t border-slate-200 space-y-2">
+                  <p className="font-mono text-slate-800 bg-white p-2.5 rounded border border-slate-200">
                     {currentQuestion.sampleSolution}
                   </p>
                   {currentQuestion.rubricKeyPoints && (
-                    <ul className="list-disc list-inside space-y-1 text-slate-400 pl-1">
+                    <ul className="list-disc list-inside space-y-1 text-slate-600 pl-1">
                       {currentQuestion.rubricKeyPoints.map((pt, i) => (
                         <li key={i}>{pt}</li>
                       ))}
@@ -584,7 +585,7 @@ export function AdaptiveAssessment({
                 type="button"
                 id="next-adaptive-question-btn"
                 onClick={handleAdvance}
-                className="w-full sm:w-auto px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full sm:w-auto px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>
                   {sessionQuestionsAnswered + 1 >= targetQuestionBudget &&

@@ -15,18 +15,29 @@ import {
   TrendingUp,
   Radio,
   GitFork,
+  MessageSquare,
+  FileUp,
+  FileText,
+  Globe,
+  PanelLeft,
+  ArrowLeft,
 } from 'lucide-react';
 
 interface LessonHeaderProps {
   currentLesson: LessonData;
-  confidenceMap: Record<string, number>;
+  confidenceMap: Record<string, number | undefined>;
   isLoadingLesson: boolean;
   onSelectPreset: (key: string) => void;
   onGenerateCustomLesson: (topic: string) => void;
   onResetConfidence: () => void;
   onOpenVoiceModal?: () => void;
+  onOpenChatModal?: () => void;
+  onOpenStudyPortal?: () => void;
   onToggleGraphSidebar?: () => void;
   isGraphSidebarOpen?: boolean;
+  onToggleSessionsSidebar?: () => void;
+  onGoHome?: () => void;
+  isSessionActive?: boolean;
 }
 
 export function LessonHeader({
@@ -37,22 +48,31 @@ export function LessonHeader({
   onGenerateCustomLesson,
   onResetConfidence,
   onOpenVoiceModal,
+  onOpenChatModal,
+  onOpenStudyPortal,
   onToggleGraphSidebar,
   isGraphSidebarOpen = false,
+  onToggleSessionsSidebar,
+  onGoHome,
+  isSessionActive = false,
 }: LessonHeaderProps) {
   const [customTopicInput, setCustomTopicInput] = useState('');
   const [showCustomModal, setShowCustomModal] = useState(false);
 
-  // Compute aggregate statistics
+  // Compute aggregate statistics from actual assessed concepts
   const concepts = currentLesson.concepts || [];
   const totalConcepts = concepts.length;
-  const confidences = concepts.map((c) => confidenceMap[c.id] ?? c.confidence ?? 0.5);
+  const assessedConcepts = concepts.filter(
+    (c) => confidenceMap[c.id] !== undefined && confidenceMap[c.id] !== null
+  );
+  const assessedCount = assessedConcepts.length;
+  const confidences = assessedConcepts.map((c) => confidenceMap[c.id] as number);
   const avgConfidence =
-    totalConcepts > 0
-      ? Math.round((confidences.reduce((acc, v) => acc + v, 0) / totalConcepts) * 100)
-      : 50;
-  const masteredCount = confidences.filter((c) => c >= 0.7).length;
-  const reviewCount = confidences.filter((c) => c < 0.4).length;
+    assessedCount > 0
+      ? Math.round((confidences.reduce((acc, v) => acc + v, 0) / assessedCount) * 100)
+      : null;
+  const masteredCount = confidences.filter((c) => c >= 0.75).length;
+  const reviewCount = confidences.filter((c) => c < 0.5).length;
 
   const handleCustomSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,171 +81,234 @@ export function LessonHeader({
     setShowCustomModal(false);
   };
 
+  const presetEntries = Object.entries(DEFAULT_CURRICULA);
+
+  // Detect current preset match or custom source
+  const currentPresetMatch = presetEntries.find(
+    ([, data]) => data.topic.toLowerCase() === currentLesson.topic.toLowerCase()
+  );
+
   return (
-    <header className="bg-slate-900/90 border-b border-slate-800 backdrop-blur-xl px-4 sm:px-6 py-3.5 sticky top-0 z-30">
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
-        {/* Brand & Topic Title */}
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-cyan-400 p-0.5 shadow-lg shadow-indigo-500/20 shrink-0">
-            <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-              <Compass className="w-5 h-5 text-indigo-400" />
-            </div>
+    <header className="bg-white/90 border-b border-slate-200/80 backdrop-blur-md px-4 sm:px-6 py-2.5 sticky top-0 z-30 shadow-xs transition-all">
+      <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+        {/* Brand & Topic Selector */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          {/* History Sidebar Toggle */}
+          {onToggleSessionsSidebar && (
+            <button
+              type="button"
+              onClick={onToggleSessionsSidebar}
+              className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+              title="Toggle Learning History"
+            >
+              <PanelLeft className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Go Home / Search button if session is active */}
+          {isSessionActive && onGoHome && (
+            <button
+              type="button"
+              onClick={onGoHome}
+              className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200 rounded-lg transition-colors cursor-pointer"
+              title="Return to Home & Web Search"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Search</span>
+            </button>
+          )}
+
+          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-xs shrink-0">
+            <Compass className="w-4 h-4" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-base sm:text-lg font-bold text-white tracking-tight">
-                ARC
-              </h1>
-              <span className="bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px] font-mono px-2 py-0.5 rounded-full font-medium">
-                Adaptive Reasoning Model
-              </span>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-bold text-slate-900 tracking-tight text-sm sm:text-base shrink-0">
+              ARC
+            </span>
+            <span className="text-slate-300 hidden sm:inline">•</span>
+
+            {/* Curriculum Preset Selector */}
+            <div className="relative flex items-center min-w-0">
+              <select
+                aria-label="Select curriculum preset"
+                value={currentPresetMatch ? currentPresetMatch[0] : ''}
+                onChange={(e) => {
+                  if (e.target.value === '__open_portal__') {
+                    if (onOpenStudyPortal) onOpenStudyPortal();
+                    else setShowCustomModal(true);
+                  } else if (e.target.value) {
+                    onSelectPreset(e.target.value);
+                  }
+                }}
+                disabled={isLoadingLesson}
+                className="bg-slate-100 hover:bg-slate-200/70 border border-slate-200 text-slate-800 text-xs font-semibold rounded-lg px-2.5 py-1.5 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer max-w-[150px] sm:max-w-[210px] truncate"
+              >
+                {presetEntries.map(([key, data]) => (
+                  <option key={key} value={key}>
+                    {data.topic}
+                  </option>
+                ))}
+                <option value="__open_portal__">+ New Topic or PDF...</option>
+              </select>
             </div>
-            <p className="text-xs text-slate-400 font-medium truncate max-w-sm sm:max-w-md">
-              {currentLesson.topic}
-            </p>
+
+            {/* Source Pill (Web Search / PDF / Custom) */}
+            {currentLesson.sourceType === 'web-search' && (
+              <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-blue-50 text-blue-700 border border-blue-200 truncate max-w-[140px]">
+                <Globe className="w-3 h-3 text-blue-600 shrink-0" />
+                <span className="truncate">Web Grounded</span>
+              </span>
+            )}
+            {currentLesson.sourceType === 'pdf' && (
+              <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 truncate max-w-[130px]">
+                <FileUp className="w-3 h-3 shrink-0" />
+                <span className="truncate">{currentLesson.sourceName || 'PDF'}</span>
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Aggregate Mastery Stats */}
-        <div className="flex items-center gap-2 sm:gap-4 overflow-x-auto pb-1 md:pb-0">
-          <div className="bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-2.5 shrink-0">
-            <div className="flex items-center gap-1 text-xs">
-              <span className="text-slate-400 text-[11px]">Knowledge Mastery:</span>
-              <span
-                className={`font-mono font-bold ${
-                  avgConfidence >= 70
-                    ? 'text-emerald-400'
-                    : avgConfidence >= 40
-                    ? 'text-amber-400'
-                    : 'text-red-400'
-                }`}
-              >
-                {avgConfidence}%
-              </span>
-            </div>
-            <div className="w-16 bg-slate-800 rounded-full h-1.5 overflow-hidden">
-              <div
-                className={`h-full transition-all duration-500 ${
-                  avgConfidence >= 70
-                    ? 'bg-emerald-400'
-                    : avgConfidence >= 40
-                    ? 'bg-amber-400'
-                    : 'bg-red-400'
-                }`}
-                style={{ width: `${avgConfidence}%` }}
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0 text-xs font-mono">
-            <span
-              className="bg-emerald-950/40 border border-emerald-800/40 text-emerald-300 px-2 py-1 rounded-lg flex items-center gap-1"
-              title="Concepts Mastered"
-            >
-              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-              {masteredCount}/{totalConcepts}
-            </span>
-            {reviewCount > 0 && (
-              <span
-                className="bg-red-950/40 border border-red-800/40 text-red-300 px-2 py-1 rounded-lg flex items-center gap-1"
-                title="Concepts Requiring Intervention"
-              >
-                <AlertTriangle className="w-3 h-3 text-red-400" />
-                {reviewCount} gap{reviewCount > 1 ? 's' : ''}
+        {/* Center / Right: Progress & Action Controls */}
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Subtle Mastery Progress Indicator */}
+          <div
+            className="hidden sm:flex items-center gap-2 px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg text-xs"
+            title={
+              avgConfidence !== null
+                ? `${masteredCount} of ${totalConcepts} concepts mastered (${avgConfidence}% average across ${assessedCount} assessed concepts)`
+                : `Curriculum unassessed (0 of ${totalConcepts} concepts tested)`
+            }
+          >
+            <span className="text-slate-500 text-[11px] font-medium">Mastery:</span>
+            {avgConfidence !== null ? (
+              <>
+                <div className="w-14 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${
+                      avgConfidence >= 75
+                        ? 'bg-emerald-500'
+                        : avgConfidence >= 50
+                        ? 'bg-indigo-500'
+                        : 'bg-amber-500'
+                    }`}
+                    style={{ width: `${avgConfidence}%` }}
+                  />
+                </div>
+                <span className="font-semibold text-slate-800 font-mono text-[11px]">
+                  {avgConfidence}%
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  ({assessedCount}/{totalConcepts})
+                </span>
+              </>
+            ) : (
+              <span className="text-slate-400 font-mono text-[11px]">
+                Pending Diagnostic
               </span>
             )}
           </div>
 
-          {/* Controls: Preset Switcher, Knowledge Graph Sidebar, Voice Tutor & Custom Generator */}
-          <div className="flex items-center gap-2 shrink-0">
-            <select
-              aria-label="Select curriculum preset"
-              onChange={(e) => onSelectPreset(e.target.value)}
-              disabled={isLoadingLesson}
-              className="bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded-xl px-2.5 py-1.5 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
-            >
-              <option value="calculus-derivatives">Calculus: Derivatives & Chain Rule</option>
-              <option value="neural-networks">Machine Learning: Neural Networks</option>
-            </select>
-
+          {/* Unified Tool Group */}
+          <div className="flex items-center bg-slate-100/80 p-0.5 rounded-lg border border-slate-200/80">
+            {/* Knowledge Graph Button */}
             {onToggleGraphSidebar && (
               <button
                 type="button"
                 onClick={onToggleGraphSidebar}
                 id="header-graph-toggle-btn"
-                className={`px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
+                className={`px-2.5 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
                   isGraphSidebarOpen
-                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 ring-1 ring-indigo-400'
-                    : 'bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30'
+                    ? 'bg-white text-indigo-600 shadow-xs font-semibold'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
-                title="Toggle Knowledge Graph Sidebar"
+                title="Toggle Knowledge Graph"
               >
-                <GitFork className="w-3.5 h-3.5 text-indigo-400" />
-                <span className="hidden sm:inline">Knowledge Graph</span>
-                <span className="sm:hidden">Graph</span>
+                <GitFork className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Graph</span>
               </button>
             )}
 
+            {/* AI Tutor Chat */}
+            {onOpenChatModal && (
+              <button
+                type="button"
+                onClick={onOpenChatModal}
+                id="header-ai-chat-btn"
+                className="px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 flex items-center gap-1.5 transition-all cursor-pointer"
+                title="AI Tutor Chat"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Tutor</span>
+              </button>
+            )}
+
+            {/* Real-time Voice */}
             {onOpenVoiceModal && (
               <button
                 type="button"
                 onClick={onOpenVoiceModal}
                 id="header-live-voice-btn"
-                className="px-3 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
-                title="Start Real-time Voice Conversation with Gemini Live API (gemini-3.1-flash-live-preview)"
+                className="px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 flex items-center gap-1.5 transition-all cursor-pointer"
+                title="Live Voice Tutor"
               >
-                <Radio className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
-                <span className="hidden sm:inline">Voice Tutor</span>
-                <span className="sm:hidden">Live</span>
+                <Radio className="w-3.5 h-3.5 text-cyan-600 animate-pulse" />
+                <span className="hidden lg:inline">Voice</span>
               </button>
             )}
-
-            <button
-              onClick={() => setShowCustomModal(true)}
-              disabled={isLoadingLesson}
-              className="px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
-              title="Generate new adaptive curriculum with NVIDIA Ultra 550b"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-              <span>AI Topic</span>
-            </button>
-
-            <button
-              onClick={onResetConfidence}
-              disabled={isLoadingLesson}
-              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 rounded-xl transition-colors"
-              title="Reset all confidence values to initial 0.5"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
           </div>
+
+          {/* Study Portal Button */}
+          <button
+            type="button"
+            onClick={() => {
+              if (onOpenStudyPortal) onOpenStudyPortal();
+              else setShowCustomModal(true);
+            }}
+            disabled={isLoadingLesson}
+            id="header-study-portal-btn"
+            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium shadow-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+            title="Upload notes, PDF, or enter custom topic"
+          >
+            <FileUp className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Import</span>
+          </button>
+
+          {/* Reset Progress */}
+          <button
+            onClick={onResetConfidence}
+            disabled={isLoadingLesson}
+            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors shrink-0 cursor-pointer"
+            title="Reset progress"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
 
       {/* Custom Topic Generator Modal */}
       {showCustomModal && (
         <div
-          className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4"
           onClick={() => setShowCustomModal(false)}
         >
           <div
-            className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center gap-2 pb-2 border-b border-slate-800">
-              <Sparkles className="w-5 h-5 text-indigo-400" />
-              <h3 className="text-base font-bold text-slate-100">
+            <div className="flex items-center gap-2 pb-2 border-b border-slate-200">
+              <Sparkles className="w-5 h-5 text-indigo-600" />
+              <h3 className="text-base font-bold text-slate-900">
                 Generate Knowledge Graph Curriculum
               </h3>
             </div>
 
-            <p className="text-xs text-slate-400 leading-relaxed">
-              ARC uses <strong className="text-slate-200">NVIDIA Nemotron 3 Ultra 550b</strong> to deconstruct any complex topic into a prerequisite DAG graph with tailored diagnostic assessments.
+            <p className="text-xs text-slate-600 leading-relaxed">
+              ARC deconstructs complex topics into structured prerequisite DAG graphs with targeted diagnostic assessments.
             </p>
 
             <form onSubmit={handleCustomSubmit} className="space-y-4">
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5">
                   Subject or Topic of Study
                 </label>
                 <input
@@ -233,7 +316,7 @@ export function LessonHeader({
                   value={customTopicInput}
                   onChange={(e) => setCustomTopicInput(e.target.value)}
                   placeholder="e.g. Quantum Computing, Thermodynamics, Dijkstra Graph Algorithms..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none"
                   autoFocus
                 />
               </div>
@@ -242,14 +325,14 @@ export function LessonHeader({
                 <button
                   type="button"
                   onClick={() => setShowCustomModal(false)}
-                  className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
+                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-900"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={!customTopicInput.trim() || isLoadingLesson}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-indigo-600/30 flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
                 >
                   {isLoadingLesson ? (
                     <>

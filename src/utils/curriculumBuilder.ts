@@ -1,255 +1,9 @@
-import { DEFAULT_CURRICULA } from '../../../src/data/defaultCurricula';
-import { LessonData } from '../../../src/types';
-import { GoogleGenAI } from '@google/genai';
-import { extractJson, generateGeminiWithFallback } from '../llmUtils';
-
-export async function POST(req: Request) {
-  let topic = 'Calculus: Derivatives & Chain Rule';
-  try {
-    const body = await req.json();
-    if (body.topic) {
-      topic = body.topic;
-    }
-    const curriculumKey = body.presetKey;
-    const customText: string | undefined = body.customText;
-    const pdfDataUrl: string | undefined = body.pdfDataUrl;
-    const pdfFileName: string | undefined = body.pdfFileName;
-    const isWebSearch: boolean = Boolean(body.isWebSearch);
-
-    // If a preset was requested and exists in pre-curated curricula
-    if (curriculumKey && DEFAULT_CURRICULA[curriculumKey] && !isWebSearch) {
-      const preset = DEFAULT_CURRICULA[curriculumKey];
-      return Response.json({
-        ...preset,
-        sourceType: 'preset',
-        sourceName: preset.topic,
-      });
-    }
-
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const nvidiaKey = process.env.NVIDIA_API_KEY;
-
-    let systemPrompt = `You are a Senior Curriculum & Knowledge Graph Architect for ARC (Adaptive Reasoning Model), an adaptive learning system.
-Analyze the provided learning material or topic and return a STRICT JSON object containing:
-1. "topic": string (concise, clear title for this learning unit)
-2. "overview": brief summary (1-2 sentences) of what this study unit covers
-3. "concepts": array of 4-7 core concepts extracted from the material, each with:
-   - "id": string (e.g. "c1", "c2")
-   - "name": concise concept title
-   - "description": clear 1-2 sentence concept definition
-   - "importance": integer from 1 to 5 (5 is most critical)
-   - "confidence": 0.5 (initial default)
-4. "prerequisites": array of directed edges showing learning flow / prerequisite dependencies:
-   - "source": prerequisite concept ID (must be understood first)
-   - "target": dependent concept ID
-   - "relation": short description of why source is a prerequisite for target
-5. "questions": array of 5-8 diagnostic questions directly testing these concepts:
-   - "id": string (e.g. "q1", "q2")
-   - "conceptId": matching concept ID
-   - "conceptName": concept name
-   - "difficulty": "foundational" | "intermediate" | "advanced"
-   - "prompt": specific problem requiring algebraic or step-by-step reasoning based on the material
-   - "rubricKeyPoints": array of 3-4 key criteria for evaluation
-   - "sampleSolution": clear reference solution
-   - "isPrerequisiteCheck": boolean (true for foundational/diagnostic questions)
-   - "targetPrerequisiteOf": optional target concept ID if this question tests a prerequisite`;
-
-    // Multimodal or Custom Text generation using Gemini
-    if (geminiKey) {
-      try {
-        const ai = new GoogleGenAI({
-          apiKey: geminiKey,
-          httpOptions: {
-            headers: {
-              'User-Agent': 'aistudio-build',
-            },
-          },
-        });
-
-        const contents: any[] = [];
-
-        // Handle PDF document if provided
-        if (pdfDataUrl) {
-          const match = pdfDataUrl.match(/^data:([^;]+);base64,(.+)$/);
-          if (match) {
-            const mimeType = match[1];
-            const base64Data = match[2];
-            contents.push({
-              inlineData: {
-                mimeType: mimeType || 'application/pdf',
-                data: base64Data,
-              },
-            });
-          }
-          contents.push({
-            text: `Please analyze this attached document (${pdfFileName || 'PDF file'}). Extract the primary concepts, their prerequisite dependencies, and diagnostic questions. Title: "${topic}".\n\n${systemPrompt}`,
-          });
-        } else if (customText && customText.trim().length > 0) {
-          // Handle custom raw text / notes / syllabus
-          contents.push({
-            text: `STUDY MATERIAL / NOTES:\n"""\n${customText.trim()}\n"""\n\nTopic reference: "${topic}". Extract the core concepts, prerequisites DAG, and diagnostic questions from this text.\n\n${systemPrompt}`,
-          });
-        } else if (isWebSearch) {
-          // Web search grounded prompt
-          contents.push({
-            text: `Search the web for the latest, authoritative educational resources, academic explanations, course syllabi, and curriculum breakdown for: "${topic}".
-Investigate real-world explanations, key prerequisite dependencies, and core diagnostic problem challenges.
-
-Synthesize your findings and output a STRICT raw JSON object conforming to this schema (do NOT wrap in markdown backticks or commentary, output JSON only):
-${systemPrompt}`,
-          });
-        } else {
-          // Standard topic prompt
-          contents.push({
-            text: `Topic: "${topic}". ${systemPrompt}`,
-          });
-        }
-
-        const geminiConfig: any = {
-          temperature: 0.2,
-        };
-
-        if (isWebSearch) {
-          // Enable Google Search Grounding for real-time web retrieval
-          geminiConfig.tools = [{ googleSearch: {} }];
-        } else {
-          geminiConfig.responseMimeType = 'application/json';
-        }
-
-        const { response } = await generateGeminiWithFallback(ai, {
-          preferredModel: 'gemini-3.8-flash',
-          contents,
-          config: geminiConfig,
-        });
-
-        const text = response.text || '';
-        const parsed: LessonData = extractJson(text);
-        parsed.concepts = (parsed.concepts || []).map((c, i) => ({
-          ...c,
-          id: c.id || `c-${i + 1}`,
-          confidence: 0.5,
-          importance: Math.min(5, Math.max(1, Number(c.importance) || 3)),
-        }));
-
-        // Extract real web grounding sources if available
-        const webSources: Array<{ title: string; url: string }> = [];
-        const candidate = response.candidates?.[0] as any;
-        const groundingChunks = candidate?.groundingMetadata?.groundingChunks;
-        if (Array.isArray(groundingChunks)) {
-          for (const chunk of groundingChunks) {
-            if (chunk?.web?.uri) {
-              webSources.push({
-                title: chunk.web.title || new URL(chunk.web.uri).hostname,
-                url: chunk.web.uri,
-              });
-            }
-          }
-        }
-        if (webSources.length > 0) {
-          parsed.webSources = webSources;
-        }
-
-        parsed.sourceType = isWebSearch
-          ? 'web-search'
-          : pdfDataUrl
-          ? 'pdf'
-          : customText
-          ? 'custom-text'
-          : 'custom-topic';
-        parsed.sourceName = isWebSearch
-          ? `Web Grounded: ${topic}`
-          : pdfFileName || (customText ? 'Custom Notes' : topic);
-        return Response.json(parsed);
-      } catch (geminiErr: any) {
-        console.warn('Gemini curriculum generation attempt failed:', geminiErr?.message || geminiErr);
-      }
-    }
-
-    // Try NVIDIA if available and no PDF (NVIDIA endpoint is text-only)
-    if (nvidiaKey && !pdfDataUrl) {
-      try {
-        const userPrompt = customText
-          ? `Generate a structured adaptive curriculum for these study notes: "${customText.slice(0, 2000)}"`
-          : `Generate a structured adaptive curriculum for: "${topic}". If this is a specific question, ensure the first diagnostic question directly asks/tests it!`;
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 6000);
-
-        const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${nvidiaKey}`,
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            model: 'nvidia/nemotron-3-ultra-550b-a55b',
-            messages: [
-              { role: 'system', content: 'You are an educational curriculum architect for ARC. Output valid raw JSON only starting with { and ending with }.' },
-              { role: 'user', content: `${systemPrompt}\n\n${userPrompt}` },
-            ],
-            response_format: { type: 'json_object' },
-            temperature: 0.2,
-            max_tokens: 1200,
-          }),
-        });
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          const data = await response.json();
-          const content = data.choices?.[0]?.message?.content || '';
-          const parsed: LessonData = extractJson(content);
-          parsed.concepts = (parsed.concepts || []).map((c, i) => ({
-            ...c,
-            id: c.id || `c-${i + 1}`,
-            confidence: 0.5,
-            importance: Math.min(5, Math.max(1, Number(c.importance) || 3)),
-          }));
-          parsed.sourceType = isWebSearch ? 'web-search' : customText ? 'custom-text' : 'custom-topic';
-          parsed.sourceName = isWebSearch ? `Web Grounded: ${topic}` : customText ? 'Custom Notes' : topic;
-          
-          // Ensure first question tests the user's specific question if one was asked
-          if (isQuestionPrompt(topic) && parsed.questions && parsed.questions.length > 0) {
-            parsed.questions[0].prompt = topic;
-          }
-
-          return Response.json(parsed);
-        }
-      } catch (nvidiaErr: any) {
-        console.warn('NVIDIA lesson generation bypassed/timed out:', nvidiaErr?.message || nvidiaErr);
-      }
-    }
-
-    // Check if topic matches one of the rich default curricula
-    const matched = Object.values(DEFAULT_CURRICULA).find(
-      (c: LessonData) => c.topic.toLowerCase().includes(topic.toLowerCase())
-    );
-    if (matched && !isQuestionPrompt(topic)) {
-      return Response.json({
-        ...matched,
-        sourceType: 'preset',
-        sourceName: matched.topic,
-      });
-    }
-
-    // Generate smart, domain-aware dynamic curriculum for the exact topic or question
-    const dynamicLesson = generateSmartCurriculum(topic, isWebSearch, customText);
-    return Response.json(dynamicLesson);
-  } catch (error) {
-    console.error('Error in analyze-lesson route:', error);
-    // Absolute fallback: still return a valid smart curriculum rather than a 500 error
-    const safeCurriculum = generateSmartCurriculum(
-      typeof topic !== 'undefined' ? String(topic) : 'Foundational Problem Solving',
-      false
-    );
-    return Response.json(safeCurriculum);
-  }
-}
+import { LessonData } from '../types';
 
 /**
  * Detect whether input is a specific question or problem statement.
  */
-function isQuestionPrompt(text: string): boolean {
+export function isQuestionPrompt(text: string): boolean {
   if (!text) return false;
   const t = text.trim();
   if (t.includes('?')) return true;
@@ -264,28 +18,19 @@ function isQuestionPrompt(text: string): boolean {
 }
 
 /**
- * Dynamic, domain-aware curriculum synthesis for any question or topic.
- * Guarantees that if the user asked a question, Question #1 IS THAT EXACT QUESTION.
+ * Builds a structured, domain-coherent curriculum with the user's exact question as Question #1.
  */
-function generateSmartCurriculum(
-  topic: string,
-  isWebSearch?: boolean,
+export function buildClientCurriculum(
+  input: string,
+  isWebSearch = false,
   customText?: string
 ): LessonData {
-  const cleanInput = (topic || '').trim();
+  const cleanInput = (input || '').trim();
   const isQuestion = isQuestionPrompt(cleanInput);
-
-  // Derive domain and clean title
   const lower = cleanInput.toLowerCase();
+  const title = isQuestion ? cleanInput.replace(/[?.,!]+$/, '') : cleanInput;
+
   let domain = 'General Science & Mathematics';
-  let title = cleanInput;
-
-  if (isQuestion) {
-    // Extract subject/topic title from question
-    title = cleanInput.replace(/[?.,!]+$/, '');
-  }
-
-  // Domain classification
   let c1Name = 'Prerequisite Principles & Axioms';
   let c1Desc = `Foundational rules, definitions, and mathematical setup required for ${title}.`;
   let c2Name = 'Core Theoretical Formulation';
@@ -378,34 +123,10 @@ function generateSmartCurriculum(
   }
 
   const concepts = [
-    {
-      id: 'c1',
-      name: c1Name,
-      description: c1Desc,
-      importance: 4,
-      confidence: 0.5,
-    },
-    {
-      id: 'c2',
-      name: c2Name,
-      description: c2Desc,
-      importance: 5,
-      confidence: 0.5,
-    },
-    {
-      id: 'c3',
-      name: c3Name,
-      description: c3Desc,
-      importance: 5,
-      confidence: 0.5,
-    },
-    {
-      id: 'c4',
-      name: c4Name,
-      description: c4Desc,
-      importance: 4,
-      confidence: 0.5,
-    },
+    { id: 'c1', name: c1Name, description: c1Desc, importance: 4, confidence: 0.5 },
+    { id: 'c2', name: c2Name, description: c2Desc, importance: 5, confidence: 0.5 },
+    { id: 'c3', name: c3Name, description: c3Desc, importance: 5, confidence: 0.5 },
+    { id: 'c4', name: c4Name, description: c4Desc, importance: 4, confidence: 0.5 },
   ];
 
   const prerequisites = [
@@ -415,7 +136,6 @@ function generateSmartCurriculum(
     { source: 'c1', target: 'c3', relation: 'Direct prerequisite grounding for procedural transformations' },
   ];
 
-  // If user provided a specific question, question #1 is EXACTLY that question!
   const firstPrompt = isQuestion
     ? cleanInput
     : `Explain the fundamental mechanisms and core principles of ${cleanInput}. What prerequisite assumptions and operational rules govern this concept?`;
@@ -481,7 +201,7 @@ function generateSmartCurriculum(
     },
   ];
 
-  const webSources: Array<{ title: string; url: string }> = isWebSearch
+  const webSources = isWebSearch
     ? [
         {
           title: `MIT OpenCourseWare: Foundations of ${domain}`,
@@ -496,7 +216,7 @@ function generateSmartCurriculum(
           url: `https://www.khanacademy.org/search?page_search_query=${encodeURIComponent(cleanInput)}`,
         },
       ]
-    : [];
+    : undefined;
 
   return {
     topic: title,
@@ -506,7 +226,7 @@ function generateSmartCurriculum(
     concepts,
     prerequisites,
     questions,
-    webSources: webSources.length > 0 ? webSources : undefined,
+    webSources,
     sourceType: isWebSearch ? 'web-search' : customText ? 'custom-text' : 'custom-topic',
     sourceName: isWebSearch ? `Web Grounded: ${title}` : customText ? 'Custom Notes' : title,
   };

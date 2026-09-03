@@ -26,6 +26,11 @@ export function AudioTranscribeButton({
       setTranscriptionStatus('idle');
       setRecordingSeconds(0);
 
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setErrorMessage('Microphone recording is not supported in this browser or environment.');
+        return;
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -34,22 +39,44 @@ export function AudioTranscribeButton({
         },
       });
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm';
+      // Select supported audio MIME type across Chrome, Safari, Firefox, Edge
+      let mimeType = '';
+      if (typeof MediaRecorder !== 'undefined') {
+        const candidates = [
+          'audio/webm;codecs=opus',
+          'audio/webm',
+          'audio/mp4',
+          'audio/aac',
+          'audio/ogg',
+          'audio/wav',
+        ];
+        for (const candidate of candidates) {
+          if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(candidate)) {
+            mimeType = candidate;
+            break;
+          }
+        }
+      }
 
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      let mediaRecorder: MediaRecorder;
+      try {
+        mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      } catch {
+        mediaRecorder = new MediaRecorder(stream);
+      }
+
+      const activeMimeType = mediaRecorder.mimeType || mimeType || 'audio/webm';
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
+        if (event.data && event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
 
       mediaRecorder.onstop = async () => {
-        // Stop all tracks
+        // Stop all tracks cleanly
         stream.getTracks().forEach((track) => track.stop());
 
         if (audioChunksRef.current.length === 0) {
@@ -57,8 +84,8 @@ export function AudioTranscribeButton({
           return;
         }
 
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-        await handleTranscribeBlob(audioBlob, mimeType);
+        const audioBlob = new Blob(audioChunksRef.current, { type: activeMimeType });
+        await handleTranscribeBlob(audioBlob, activeMimeType);
       };
 
       mediaRecorder.start(250);
@@ -69,7 +96,11 @@ export function AudioTranscribeButton({
       }, 1000);
     } catch (err: any) {
       console.error('Failed to start recording:', err);
-      setErrorMessage('Microphone access denied or unsupported.');
+      setErrorMessage(
+        err?.name === 'NotAllowedError'
+          ? 'Microphone permission was denied. Please allow microphone access.'
+          : 'Microphone is unavailable or unsupported in this browser.'
+      );
       setIsRecording(false);
     }
   };
@@ -111,12 +142,14 @@ export function AudioTranscribeButton({
           }
 
           const data = await res.json();
-          if (data.transcription) {
-            onTranscriptionComplete(data.transcription);
+          if (data.transcription && data.transcription.trim().length > 0) {
+            onTranscriptionComplete(data.transcription.trim());
             setTranscriptionStatus('success');
             setTimeout(() => setTranscriptionStatus('idle'), 3500);
           } else {
-            throw new Error('Empty transcription returned');
+            setErrorMessage('No clear speech was detected. Please speak closer to the microphone and try again.');
+            setTranscriptionStatus('error');
+            setTimeout(() => setTranscriptionStatus('idle'), 4000);
           }
         } catch (apiErr: any) {
           console.error('Transcription API error:', apiErr);
@@ -148,12 +181,12 @@ export function AudioTranscribeButton({
             onClick={startRecording}
             disabled={disabled}
             id="voice-transcribe-record-btn"
-            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-indigo-200 border border-slate-700 hover:border-indigo-500/40 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
+            className="px-3 py-1.5 bg-white hover:bg-indigo-50 text-indigo-700 hover:text-indigo-800 border border-slate-200 hover:border-indigo-300 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer shadow-xs"
             title="Dictate your response using Gemini 3.5 Transcribe"
           >
-            <Mic className="w-3.5 h-3.5 text-indigo-400" />
+            <Mic className="w-3.5 h-3.5 text-indigo-600" />
             <span>Dictate Answer</span>
-            <span className="text-[10px] font-mono text-indigo-400/80 bg-indigo-500/10 px-1.5 py-0.2 rounded border border-indigo-500/20">
+            <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
               gemini-3.5-transcribe
             </span>
           </button>
@@ -164,7 +197,7 @@ export function AudioTranscribeButton({
             type="button"
             onClick={stopRecording}
             id="voice-transcribe-stop-btn"
-            className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-lg shadow-rose-600/30 animate-pulse cursor-pointer"
+            className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-sm animate-pulse cursor-pointer"
           >
             <span className="w-2 h-2 rounded-full bg-white animate-ping" />
             <Square className="w-3.5 h-3.5 fill-current" />
@@ -173,14 +206,14 @@ export function AudioTranscribeButton({
         )}
 
         {isTranscribing && (
-          <div className="px-3 py-1.5 bg-indigo-950/60 border border-indigo-800/80 text-indigo-300 rounded-xl text-xs flex items-center gap-2 animate-pulse font-mono">
-            <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+          <div className="px-3 py-1.5 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl text-xs flex items-center gap-2 animate-pulse font-mono">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
             <span>Transcribing with gemini-3.5-transcribe...</span>
           </div>
         )}
 
         {transcriptionStatus === 'success' && (
-          <span className="text-emerald-400 text-xs flex items-center gap-1 font-medium animate-fadeIn">
+          <span className="text-emerald-600 text-xs flex items-center gap-1 font-medium animate-fadeIn">
             <Check className="w-3.5 h-3.5" />
             <span>Transcribed!</span>
           </span>
@@ -188,7 +221,7 @@ export function AudioTranscribeButton({
       </div>
 
       {errorMessage && (
-        <div className="text-[11px] text-rose-400 flex items-center gap-1">
+        <div className="text-[11px] text-rose-600 flex items-center gap-1">
           <AlertCircle className="w-3 h-3 shrink-0" />
           <span>{errorMessage}</span>
         </div>

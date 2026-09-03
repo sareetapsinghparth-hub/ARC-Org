@@ -8,6 +8,7 @@ import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { POST as analyzeLessonHandler } from './app/api/analyze-lesson/route';
 import { POST as analyzeAnswerHandler } from './app/api/analyze-answer/route';
 import { POST as transcribeHandler } from './app/api/transcribe/route';
+import { POST as chatHandler } from './app/api/chat/route';
 
 dotenv.config();
 
@@ -76,6 +77,23 @@ async function startServer() {
       res.status(response.status).json(json);
     } catch (err: any) {
       console.error('Server error in /api/transcribe:', err);
+      res.status(500).json({ error: 'Internal server error', details: err?.message });
+    }
+  });
+
+  // AI Tutor Interactive Chat Route using gemini-3.8-flash (supports text + PDF/image attachments)
+  app.post('/api/chat', async (req, res) => {
+    try {
+      const simulatedRequest = new Request('http://localhost:3000/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body),
+      });
+      const response = await chatHandler(simulatedRequest);
+      const json = await response.json();
+      res.status(response.status).json(json);
+    } catch (err: any) {
+      console.error('Server error in /api/chat:', err);
       res.status(500).json({ error: 'Internal server error', details: err?.message });
     }
   });

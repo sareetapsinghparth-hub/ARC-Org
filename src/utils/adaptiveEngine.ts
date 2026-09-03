@@ -1,20 +1,21 @@
 import { Concept, PrerequisiteEdge, Question, AdaptiveSelectionMeta } from '../types';
+import { getConceptStatus } from './kGraphJudgment';
 
 /**
  * Deterministic Adaptive Selection Engine for ARC (Adaptive Reasoning Model)
  * 
  * Priority Rules:
- * 1. Identify the lowest-confidence concept (weighted by importance 1-5).
- * 2. Check if this concept has any weak prerequisite (confidence < 0.6).
- *    If so, prioritize foundational/prerequisite questions for the weak prerequisite first.
- * 3. Never repeat an already asked question while unasked questions remain.
- * 4. Permit repetition only once all questions in the bank have been asked.
+ * 1. Prerequisite Gaps: Intervene on weak prerequisites identified from incorrect answers.
+ * 2. Unassessed Foundational Concepts: Test root concepts first to establish baseline in K-Graph.
+ * 3. Unassessed Successors: Concepts whose prerequisites are already verified or mastered.
+ * 4. Developing Concepts (0.50–0.75): Practice and reinforce.
+ * 5. Mastered Concepts (>= 0.75): Lowest priority, repeat only once all questions are asked.
  */
 export function selectNextAdaptiveQuestion(
   concepts: Concept[],
   prerequisites: PrerequisiteEdge[],
   questions: Question[],
-  confidenceMap: Record<string, number>,
+  confidenceMap: Record<string, number | undefined>,
   askedQuestionIds: string[]
 ): {
   question: Question | null;
@@ -41,43 +42,85 @@ export function selectNextAdaptiveQuestion(
   const unaskedTotal = questions.filter((q) => !activeAskedIds.includes(q.id));
 
   if (unaskedTotal.length === 0) {
-    // All questions have been asked -> Reset asked pool for reinforced mastery
     activeAskedIds = [];
     resetCycle = true;
   }
 
-  // Rank concepts by need: lowest confidence first, breaking ties with highest importance
+  // On session start with no questions asked yet, always present the primary target question (questions[0])
+  if (activeAskedIds.length === 0 && questions.length > 0) {
+    const primaryQ = questions[0];
+    const targetConcept = concepts.find((c) => c.id === primaryQ.conceptId);
+    return {
+      question: primaryQ,
+      meta: {
+        selectedConceptId: primaryQ.conceptId,
+        selectedConceptName: targetConcept?.name || primaryQ.conceptName || 'Diagnostic Evaluation',
+        reason: `Primary Target: Directly evaluating understanding of "${primaryQ.conceptName || targetConcept?.name}".`,
+        isPrerequisiteIntervention: false,
+        conceptConfidence: confidenceMap[primaryQ.conceptId] ?? 0.5,
+      },
+      resetCycle: false,
+    };
+  }
+
+  // Calculate in-degree (prerequisites count)
+  const inDegree: Record<string, number> = {};
+  concepts.forEach((c) => { inDegree[c.id] = 0; });
+  (prerequisites || []).forEach((p) => {
+    if (inDegree[p.target] !== undefined) {
+      inDegree[p.target] = inDegree[p.target] + 1;
+    }
+  });
+
+  // Rank concepts by adaptive pedagogical need
   const conceptScores = concepts.map((c) => {
-    const conf = confidenceMap[c.id] ?? c.confidence ?? 0.5;
-    // Score formula: lower confidence gives higher priority, boosted by importance
-    // Score = (1 - conf) * 10 + importance
-    const priorityScore = (1 - conf) * 10 + (c.importance || 3);
+    const rawConf = confidenceMap[c.id];
+    const status = getConceptStatus(rawConf);
+    const importance = c.importance || 3;
+    const prereqsCount = inDegree[c.id] || 0;
+
+    let priorityScore = 0;
+    if (status === 'prereq_gap') {
+      // Highest priority: actively diagnosed misconception or gap
+      priorityScore = 30 + (1 - (rawConf || 0.2)) * 10 + importance;
+    } else if (status === 'unassessed') {
+      // High priority: unassessed concepts (foundational roots first)
+      const isRoot = prereqsCount === 0;
+      priorityScore = 20 + (isRoot ? 8 : 0) - prereqsCount * 1.5 + importance;
+    } else if (status === 'developing') {
+      // Moderate priority: progressing concepts
+      priorityScore = 12 + (1 - (rawConf || 0.6)) * 10 + importance;
+    } else {
+      // Mastered or prereq_verified: lowest priority
+      priorityScore = 2 + importance;
+    }
+
     return {
       concept: c,
-      confidence: conf,
-      importance: c.importance || 3,
+      confidence: rawConf,
+      status,
+      importance,
       priorityScore,
     };
   });
 
-  // Sort concepts descending by priority score (most urgent concept first)
+  // Sort concepts descending by priority score
   conceptScores.sort((a, b) => b.priorityScore - a.priorityScore);
 
   const primaryTarget = conceptScores[0];
   const primaryConceptId = primaryTarget.concept.id;
 
   // Build prerequisite map: which concepts are prerequisites of primaryConceptId?
-  const prereqEdges = prerequisites.filter((p) => p.target === primaryConceptId);
+  const prereqEdges = (prerequisites || []).filter((p) => p.target === primaryConceptId);
   const prereqConceptIds = prereqEdges.map((p) => p.source);
 
-  // Check if any prerequisite has weak confidence (< 0.60 or lower than target)
+  // Check if any prerequisite has a diagnosed gap (< 0.50) or is unassessed while primary is not
   const weakPrereqs = conceptScores.filter(
-    (cs) => prereqConceptIds.includes(cs.concept.id) && cs.confidence < 0.6
+    (cs) => prereqConceptIds.includes(cs.concept.id) && (cs.status === 'prereq_gap' || (cs.status === 'unassessed' && primaryTarget.status !== 'unassessed'))
   );
 
-  // If a weak prerequisite exists, check if there are unasked questions for it
+  // If a weak prerequisite exists, reinforce prerequisite foundations first
   if (weakPrereqs.length > 0) {
-    // Pick the lowest-confidence prerequisite
     const weakestPrereq = weakPrereqs[0];
     const prereqQuestions = questions.filter(
       (q) =>
@@ -88,7 +131,6 @@ export function selectNextAdaptiveQuestion(
     );
 
     if (prereqQuestions.length > 0) {
-      // Choose foundational first if available
       const bestPrereqQ =
         prereqQuestions.find((q) => q.difficulty === 'foundational') || prereqQuestions[0];
 
@@ -97,12 +139,10 @@ export function selectNextAdaptiveQuestion(
         meta: {
           selectedConceptId: weakestPrereq.concept.id,
           selectedConceptName: weakestPrereq.concept.name,
-          reason: `Prerequisite Gap Detected: "${weakestPrereq.concept.name}" has ${Math.round(
-            weakestPrereq.confidence * 100
-          )}% confidence, which blocks mastery of "${primaryTarget.concept.name}". Reinforcing prerequisite foundations first.`,
+          reason: `Prerequisite Gap Detected: Foundational prerequisite "${weakestPrereq.concept.name}" must be validated before mastering "${primaryTarget.concept.name}". Reinforcing prerequisite foundations.`,
           isPrerequisiteIntervention: true,
           prerequisiteFor: primaryTarget.concept.name,
-          conceptConfidence: weakestPrereq.confidence,
+          conceptConfidence: weakestPrereq.confidence ?? 0.5,
         },
         resetCycle,
       };
@@ -115,14 +155,15 @@ export function selectNextAdaptiveQuestion(
   );
 
   if (targetQuestions.length > 0) {
-    // Choose question based on confidence level
     let chosenQ: Question;
-    if (primaryTarget.confidence < 0.4) {
+    const currentConf = primaryTarget.confidence;
+
+    if (currentConf === undefined || currentConf < 0.5) {
       chosenQ =
         targetQuestions.find((q) => q.difficulty === 'foundational') ||
         targetQuestions.find((q) => q.difficulty === 'intermediate') ||
         targetQuestions[0];
-    } else if (primaryTarget.confidence < 0.7) {
+    } else if (currentConf < 0.75) {
       chosenQ =
         targetQuestions.find((q) => q.difficulty === 'intermediate') ||
         targetQuestions.find((q) => q.difficulty === 'foundational') ||
@@ -134,16 +175,23 @@ export function selectNextAdaptiveQuestion(
         targetQuestions[0];
     }
 
+    const reason =
+      primaryTarget.status === 'unassessed'
+        ? `Initial Diagnostic: "${primaryTarget.concept.name}" is currently unassessed. Evaluating to establish baseline in prerequisite graph.`
+        : primaryTarget.status === 'prereq_gap'
+        ? `Target Intervention: Identified gap in "${primaryTarget.concept.name}" (${Math.round(
+            (currentConf || 0.25) * 100
+          )}%). Targeted diagnostic question to address misconceptions.`
+        : `Progress Reinforcement: Practicing "${primaryTarget.concept.name}" to advance from developing to full mastery.`;
+
     return {
       question: chosenQ,
       meta: {
         selectedConceptId: primaryConceptId,
         selectedConceptName: primaryTarget.concept.name,
-        reason: `Target Concept Focus: "${primaryTarget.concept.name}" has the lowest mastery score (${Math.round(
-          primaryTarget.confidence * 100
-        )}%) among key high-importance concepts (Importance: ${primaryTarget.importance}/5).`,
+        reason,
         isPrerequisiteIntervention: false,
-        conceptConfidence: primaryTarget.confidence,
+        conceptConfidence: primaryTarget.confidence ?? 0.5,
       },
       resetCycle,
     };
@@ -160,11 +208,11 @@ export function selectNextAdaptiveQuestion(
         meta: {
           selectedConceptId: cs.concept.id,
           selectedConceptName: cs.concept.name,
-          reason: `Progressive Mastery: Advancing knowledge in "${cs.concept.name}" (Confidence: ${Math.round(
-            cs.confidence * 100
-          )}%).`,
+          reason: cs.status === 'unassessed'
+            ? `Baseline Diagnostic: Evaluating "${cs.concept.name}" in prerequisite graph.`
+            : `Progressive Mastery: Advancing knowledge in "${cs.concept.name}" (${Math.round((cs.confidence || 0.5) * 100)}%).`,
           isPrerequisiteIntervention: false,
-          conceptConfidence: cs.confidence,
+          conceptConfidence: cs.confidence ?? 0.5,
         },
         resetCycle,
       };

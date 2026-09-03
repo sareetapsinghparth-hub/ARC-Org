@@ -1,5 +1,6 @@
-import { AnswerAnalysisResult, Question, Concept } from '../../../src/types';
-import { GoogleGenAI } from '@google/genai';
+import { AnswerAnalysisResult, Question, Concept, ConceptMasteryStatus } from '../../../src/types';
+import { GoogleGenAI, Type } from '@google/genai';
+import { extractJson, generateGeminiWithFallback } from '../llmUtils';
 
 export async function POST(req: Request) {
   try {
@@ -45,7 +46,7 @@ export async function POST(req: Request) {
 
       // Check size approximation from base64 string
       const stringLength = imageDataUrl.length - 'data:image/png;base64,'.length;
-      const sizeInBytes = 4 * Math.ceil(stringLength / 3) * 0.562489; // rough base64 byte size
+      const sizeInBytes = 4 * Math.ceil(stringLength / 3) * 0.562489;
       if (sizeInBytes > 5 * 1024 * 1024) {
         return Response.json(
           {
@@ -67,16 +68,16 @@ export async function POST(req: Request) {
 
     let analysis: AnswerAnalysisResult | null = null;
 
-    // Prefer Gemini Live/Flash in AI Studio environment
+    // 1. Primary: Gemini with automatic retry on 503 and fallback models (gemini-3.8-flash -> gemini-3.1-flash-lite)
     if (geminiKey) {
       try {
         analysis = await evaluateWithGemini(geminiKey, question, studentAnswer, imageDataUrl);
-      } catch (geminiErr) {
-        console.warn('Gemini evaluation attempt failed, attempting backup:', geminiErr);
+      } catch (geminiErr: any) {
+        console.warn('Gemini evaluation attempt failed, attempting backup:', geminiErr?.message || geminiErr);
       }
     }
 
-    // Secondary NVIDIA engine if configured
+    // 2. Secondary: NVIDIA engine if configured
     if (!analysis && nvidiaKey) {
       try {
         if (imageDataUrl) {
@@ -84,12 +85,12 @@ export async function POST(req: Request) {
         } else {
           analysis = await evaluateWithNvidiaText(nvidiaKey, question, studentAnswer);
         }
-      } catch (nvidiaErr) {
-        console.warn('NVIDIA evaluation failed:', nvidiaErr);
+      } catch (nvidiaErr: any) {
+        console.warn('NVIDIA evaluation failed:', nvidiaErr?.message || nvidiaErr);
       }
     }
 
-    // Fallback deterministic evaluator when external APIs are not responding
+    // 3. Resilient Fallback: Deterministic rubric evaluator
     if (!analysis) {
       analysis = fallbackEvaluateAnswer(question, studentAnswer, imageDataUrl);
     }
@@ -101,6 +102,28 @@ export async function POST(req: Request) {
     analysis.confidenceDelta = delta;
     analysis.newConfidence = updatedConfidence;
 
+    // Populate graph update diagnostics if missing
+    if (!analysis.graphUpdate) {
+      const targetStatus: ConceptMasteryStatus =
+        analysis.score >= 0.8
+          ? 'mastered'
+          : analysis.score >= 0.5
+          ? 'developing'
+          : 'prereq_gap';
+
+      analysis.graphUpdate = {
+        targetConceptId: question.conceptId,
+        targetStatus,
+        targetConfidence: updatedConfidence,
+        verifiedPrereqIds:
+          analysis.score >= 0.8 && question.targetPrerequisiteOf
+            ? [question.conceptId]
+            : [],
+        flaggedGapPrereqIds: analysis.score < 0.5 ? [question.conceptId] : [],
+        reasoning: analysis.feedback,
+      };
+    }
+
     return Response.json(analysis);
   } catch (error) {
     console.error('Error analyzing student answer:', error);
@@ -108,7 +131,7 @@ export async function POST(req: Request) {
     const fallbackResult: AnswerAnalysisResult = {
       status: 'partly correct',
       score: 0.5,
-      misconception: 'Unable to complete automated model evaluation due to a network or parsing timeout.',
+      misconception: 'Unable to complete automated model evaluation due to a temporary network issue.',
       feedback: 'Your answer has been logged. We could not verify every step against the server, but your attempt is recorded.',
       recommendedAction: 'Review the sample solution and continue to the next adaptive question.',
       confidenceDelta: 0,
@@ -159,16 +182,7 @@ Evaluate both the handwritten image (if attached) and typed text:
 3. Student's text explanation
 4. Consistency between the written work and text response
 
-Return a STRICT JSON object conforming to:
-{
-  "status": "correct" | "partly correct" | "incorrect",
-  "score": number between 0.0 and 1.0,
-  "misconception": "Brief description of any mathematical misconception or 'None'",
-  "feedback": "Clear, encouraging explanation of what was done well and any calculation/logic errors",
-  "recommendedAction": "Actionable next step for the student",
-  "writtenStepsAnalysis": "Observations from the handwritten steps or null",
-  "consistencyNotes": "Whether written steps match the text response or null"
-}`;
+Return strict JSON matching the schema.`;
 
   const contents: any[] = [{ text: prompt }];
 
@@ -186,19 +200,52 @@ Return a STRICT JSON object conforming to:
     });
   }
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: {
-      parts: contents,
-    },
+  // Use resilient caller with automatic retry on 503 and fallback to gemini-3.1-flash-lite
+  const { response } = await generateGeminiWithFallback(ai, {
+    contents: { parts: contents },
+    preferredModel: 'gemini-3.8-flash',
     config: {
       responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          status: {
+            type: Type.STRING,
+            description: "Must be 'correct', 'partly correct', or 'incorrect'",
+          },
+          score: {
+            type: Type.NUMBER,
+            description: 'A number between 0.0 and 1.0 representing accuracy',
+          },
+          misconception: {
+            type: Type.STRING,
+            description: "Brief description of any mathematical misconception or 'None'",
+          },
+          feedback: {
+            type: Type.STRING,
+            description: 'Clear, encouraging explanation of what was done well and any calculation/logic errors',
+          },
+          recommendedAction: {
+            type: Type.STRING,
+            description: 'Actionable next step for the student',
+          },
+          writtenStepsAnalysis: {
+            type: Type.STRING,
+            description: 'Observations from the handwritten steps or null',
+          },
+          consistencyNotes: {
+            type: Type.STRING,
+            description: 'Whether written steps match the text response or null',
+          },
+        },
+        required: ['status', 'score', 'misconception', 'feedback', 'recommendedAction'],
+      },
       temperature: 0.1,
     },
   });
 
-  const text = response.text || '';
-  const parsed = JSON.parse(text);
+  const rawText = response.text || '';
+  const parsed = extractJson(rawText);
   return sanitizeAnalysisResult(parsed);
 }
 
@@ -217,13 +264,9 @@ Reference Solution: "${question.sampleSolution || ''}"
 
 Student typed text: "${studentAnswer || '(No text provided - image only)'}"
 
-Evaluate both the handwritten image and typed text:
-1. Visible written steps in the image
-2. Final algebraic / numeric answer
-3. Student's text explanation
-4. Consistency between the written work and text response
-
-Return a STRICT JSON object:
+Evaluate both the handwritten image and typed text.
+Output a raw JSON object only. Do not write any conversational preamble, intro, or markdown.
+JSON Schema:
 {
   "status": "correct" | "partly correct" | "incorrect",
   "score": number between 0.0 and 1.0,
@@ -232,8 +275,7 @@ Return a STRICT JSON object:
   "recommendedAction": "Actionable next step for the student",
   "writtenStepsAnalysis": "Observations from the handwritten steps",
   "consistencyNotes": "Whether written steps match the text response"
-}
-Return JSON ONLY. No markdown formatting.`;
+}`;
 
   const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
     method: 'POST',
@@ -245,6 +287,10 @@ Return JSON ONLY. No markdown formatting.`;
       model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
       messages: [
         {
+          role: 'system',
+          content: 'You are an objective mathematical evaluation engine. Output raw valid JSON only starting with { and ending with }. Do not include reasoning, thoughts, or commentary outside the JSON.',
+        },
+        {
           role: 'user',
           content: [
             { type: 'text', text: prompt },
@@ -252,6 +298,7 @@ Return JSON ONLY. No markdown formatting.`;
           ],
         },
       ],
+      response_format: { type: 'json_object' },
       temperature: 0.2,
       max_tokens: 1200,
     }),
@@ -263,9 +310,8 @@ Return JSON ONLY. No markdown formatting.`;
 
   const data = await response.json();
   const rawContent = data.choices?.[0]?.message?.content || '';
-  const cleaned = rawContent.replace(/```json/gi, '').replace(/```/g, '').trim();
-  const parsed = JSON.parse(cleaned);
-
+  // Robust extraction cleanly parses JSON even if the model outputs preamble or thoughts
+  const parsed = extractJson(rawContent);
   return sanitizeAnalysisResult(parsed);
 }
 
@@ -283,15 +329,15 @@ Reference Solution: "${question.sampleSolution || ''}"
 
 Student text: "${studentAnswer}"
 
-Return a STRICT JSON object:
+Output a raw JSON object only. Do not write any conversational preamble, intro, or markdown.
+JSON format:
 {
   "status": "correct" | "partly correct" | "incorrect",
   "score": number between 0.0 and 1.0,
   "misconception": "Brief description of any mathematical misconception or 'None'",
   "feedback": "Constructive pedagogical feedback explaining correctness or specific missing steps",
   "recommendedAction": "Actionable next step for mastery"
-}
-Return JSON ONLY. No markdown.`;
+}`;
 
   const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
     method: 'POST',
@@ -302,9 +348,13 @@ Return JSON ONLY. No markdown.`;
     body: JSON.stringify({
       model: 'nvidia/nemotron-3-ultra-550b-a55b',
       messages: [
-        { role: 'system', content: 'You are an objective mathematical evaluation engine. Output valid JSON only.' },
+        {
+          role: 'system',
+          content: 'You are an objective mathematical evaluation engine. Output raw valid JSON only starting with { and ending with }. Do not output conversational reasoning or thoughts outside the JSON.',
+        },
         { role: 'user', content: prompt },
       ],
+      response_format: { type: 'json_object' },
       temperature: 0.2,
       max_tokens: 800,
     }),
@@ -316,22 +366,33 @@ Return JSON ONLY. No markdown.`;
 
   const data = await response.json();
   const rawContent = data.choices?.[0]?.message?.content || '';
-  const cleaned = rawContent.replace(/```json/gi, '').replace(/```/g, '').trim();
-  const parsed = JSON.parse(cleaned);
-
+  // Robust extraction cleanly parses JSON even if the model outputs preamble like "We are given..."
+  const parsed = extractJson(rawContent);
   return sanitizeAnalysisResult(parsed);
 }
 
 function sanitizeAnalysisResult(parsed: any): AnswerAnalysisResult {
   const validStatus = ['correct', 'partly correct', 'incorrect'].includes(parsed.status)
     ? parsed.status
-    : parsed.score >= 0.8
+    : (parsed.score ?? 0.5) >= 0.8
     ? 'correct'
-    : parsed.score >= 0.4
+    : (parsed.score ?? 0.5) >= 0.4
     ? 'partly correct'
     : 'incorrect';
 
-  const score = Math.max(0, Math.min(1, typeof parsed.score === 'number' ? parsed.score : validStatus === 'correct' ? 1.0 : validStatus === 'partly correct' ? 0.6 : 0.2));
+  const score = Math.max(
+    0,
+    Math.min(
+      1,
+      typeof parsed.score === 'number'
+        ? parsed.score
+        : validStatus === 'correct'
+        ? 1.0
+        : validStatus === 'partly correct'
+        ? 0.6
+        : 0.2
+    )
+  );
 
   return {
     status: validStatus,
@@ -339,8 +400,8 @@ function sanitizeAnalysisResult(parsed: any): AnswerAnalysisResult {
     misconception: parsed.misconception || 'None identified',
     feedback: parsed.feedback || 'Your solution has been evaluated.',
     recommendedAction: parsed.recommendedAction || 'Continue to the next adaptive question.',
-    writtenStepsAnalysis: parsed.writtenStepsAnalysis,
-    consistencyNotes: parsed.consistencyNotes,
+    writtenStepsAnalysis: parsed.writtenStepsAnalysis || undefined,
+    consistencyNotes: parsed.consistencyNotes || undefined,
     confidenceDelta: 0,
     newConfidence: 0.5,
   };
@@ -368,8 +429,8 @@ function fallbackEvaluateAnswer(question: Question, answer: string, imageDataUrl
   // Simple heuristic checks on rubric keywords and length
   let matchedRubricCount = 0;
   for (const point of rubric) {
-    const words = point.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-    if (words.some(w => norm.includes(w))) {
+    const words = point.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+    if (words.some((w) => norm.includes(w))) {
       matchedRubricCount++;
     }
   }

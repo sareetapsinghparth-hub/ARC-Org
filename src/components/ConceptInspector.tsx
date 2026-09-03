@@ -1,13 +1,15 @@
 import React from 'react';
 import { Concept, PrerequisiteEdge, Question } from '../types';
-import { X, Star, GitFork, ArrowRight, BookOpen, CheckCircle2, AlertCircle, Sparkles, Layers } from 'lucide-react';
+import { X, Star, GitFork, ArrowRight, BookOpen, CheckCircle2, AlertCircle, HelpCircle, ShieldCheck } from 'lucide-react';
+import { getConceptStatus, getStatusBadgeInfo } from '../utils/kGraphJudgment';
 
 interface ConceptInspectorProps {
   conceptId: string | null;
   concepts: Concept[];
   prerequisites: PrerequisiteEdge[];
   questions: Question[];
-  confidenceMap: Record<string, number>;
+  confidenceMap: Record<string, number | undefined>;
+  verifiedPrereqMap?: Record<string, boolean>;
   onClose: () => void;
   onSelectAsTarget?: (conceptId: string) => void;
 }
@@ -18,6 +20,7 @@ export function ConceptInspector({
   prerequisites,
   questions,
   confidenceMap,
+  verifiedPrereqMap = {},
   onClose,
   onSelectAsTarget,
 }: ConceptInspectorProps) {
@@ -26,11 +29,14 @@ export function ConceptInspector({
   const concept = concepts.find((c) => c.id === conceptId);
   if (!concept) return null;
 
-  const conf = confidenceMap[concept.id] ?? concept.confidence ?? 0.5;
-  const percentage = Math.round(conf * 100);
+  const rawConf = confidenceMap[concept.id];
+  const isAssessed = rawConf !== undefined && rawConf !== null;
+  const isVerified = Boolean(verifiedPrereqMap[concept.id]);
+  const status = getConceptStatus(rawConf, isVerified);
+  const badgeInfo = getStatusBadgeInfo(status);
 
   // Incoming prerequisites (concepts that lead to this one)
-  const incoming = prerequisites
+  const incoming = (prerequisites || [])
     .filter((p) => p.target === concept.id)
     .map((p) => ({
       concept: concepts.find((c) => c.id === p.source),
@@ -39,7 +45,7 @@ export function ConceptInspector({
     .filter((item) => item.concept !== undefined);
 
   // Outgoing dependents (concepts that this one unlocks)
-  const outgoing = prerequisites
+  const outgoing = (prerequisites || [])
     .filter((p) => p.source === concept.id)
     .map((p) => ({
       concept: concepts.find((c) => c.id === p.target),
@@ -47,62 +53,60 @@ export function ConceptInspector({
     }))
     .filter((item) => item.concept !== undefined);
 
-  const relatedQuestions = questions.filter((q) => q.conceptId === concept.id);
+  const relatedQuestions = (questions || []).filter((q) => q.conceptId === concept.id);
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full sm:w-96 bg-slate-900/95 border-l border-slate-800 shadow-2xl backdrop-blur-xl p-5 flex flex-col justify-between overflow-y-auto animate-slideLeft">
+    <div className="fixed inset-y-0 right-0 z-40 w-full sm:w-96 bg-white border-l border-slate-200 shadow-2xl p-5 flex flex-col justify-between overflow-y-auto animate-slideLeft">
       <div className="space-y-5">
         {/* Header */}
-        <div className="flex items-start justify-between pb-3 border-b border-slate-800">
+        <div className="flex items-start justify-between pb-3 border-b border-slate-200">
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+            <div className="p-2 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200">
               <BookOpen className="w-4 h-4" />
             </div>
             <div>
               <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
-                Concept Node
+                K-Graph Concept Node
               </span>
-              <h3 className="text-base font-bold text-slate-100 leading-snug">{concept.name}</h3>
+              <h3 className="text-base font-bold text-slate-900 leading-snug">{concept.name}</h3>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-200 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors"
+            className="p-1.5 text-slate-500 hover:text-slate-800 rounded-lg bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Confidence & Importance Metric Cards */}
+        {/* Diagnostic Status & Importance Metric Cards */}
         <div className="grid grid-cols-2 gap-2.5">
-          <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-            <span className="text-[11px] text-slate-400 block mb-1">Mastery Confidence</span>
-            <div className="flex items-baseline gap-1.5">
-              <span
-                className={`text-xl font-bold font-mono ${
-                  conf >= 0.7 ? 'text-emerald-400' : conf >= 0.4 ? 'text-amber-400' : 'text-red-400'
-                }`}
-              >
-                {percentage}%
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+            <span className="text-[11px] text-slate-500 block mb-1">Diagnostic Status</span>
+            <div className="space-y-1">
+              <span className={`text-base font-bold font-mono ${badgeInfo.textColor}`}>
+                {isAssessed ? `${Math.round((rawConf || 0) * 100)}%` : 'Unassessed'}
               </span>
-              <span className="text-xs text-slate-500 font-mono">c={conf.toFixed(2)}</span>
+              <div className="text-[11px] font-medium text-slate-600">
+                {badgeInfo.label}
+              </div>
             </div>
           </div>
 
-          <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-            <span className="text-[11px] text-slate-400 block mb-1">Curriculum Importance</span>
-            <div className="flex items-center gap-1 text-amber-400">
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+            <span className="text-[11px] text-slate-500 block mb-1">Curriculum Importance</span>
+            <div className="flex items-center gap-1 text-amber-500">
               {Array.from({ length: 5 }).map((_, i) => (
                 <Star
                   key={i}
                   className={`w-3.5 h-3.5 ${
                     i < concept.importance
-                      ? 'fill-amber-400 text-amber-400'
-                      : 'text-slate-700 fill-slate-800'
+                      ? 'fill-amber-500 text-amber-500'
+                      : 'text-slate-300 fill-slate-200'
                   }`}
                 />
               ))}
-              <span className="text-xs font-mono text-slate-300 ml-1">
+              <span className="text-xs font-mono text-slate-700 ml-1">
                 {concept.importance}/5
               </span>
             </div>
@@ -111,48 +115,46 @@ export function ConceptInspector({
 
         {/* Description */}
         <div>
-          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
             Definition & Core Mechanics
           </h4>
-          <p className="text-xs sm:text-sm text-slate-300 bg-slate-950/40 p-3 rounded-xl border border-slate-800/80 leading-relaxed">
+          <p className="text-xs sm:text-sm text-slate-700 bg-slate-50 p-3 rounded-xl border border-slate-200 leading-relaxed">
             {concept.description}
           </p>
         </div>
 
         {/* Direct Prerequisites (Incoming) */}
         <div>
-          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
-            <GitFork className="w-3.5 h-3.5 text-indigo-400 rotate-180" />
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5">
+            <GitFork className="w-3.5 h-3.5 text-indigo-600 rotate-180" />
             Prerequisites Required ({incoming.length})
           </h4>
           {incoming.length === 0 ? (
-            <p className="text-xs text-slate-500 italic bg-slate-950/30 p-2.5 rounded-lg border border-slate-800/40">
+            <p className="text-xs text-slate-500 italic bg-slate-50 p-2.5 rounded-lg border border-slate-200">
               Foundational Root Node: No prior dependencies in this curriculum.
             </p>
           ) : (
             <div className="space-y-2">
               {incoming.map(({ concept: pre, relation }) => {
                 if (!pre) return null;
-                const preConf = confidenceMap[pre.id] ?? pre.confidence ?? 0.5;
+                const preConf = confidenceMap[pre.id];
+                const isPreAssessed = preConf !== undefined && preConf !== null;
+                const preStatus = getConceptStatus(preConf, Boolean(verifiedPrereqMap[pre.id]));
+                const preBadge = getStatusBadgeInfo(preStatus);
+
                 return (
                   <div
                     key={pre.id}
-                    className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 text-xs flex items-center justify-between gap-2"
+                    className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-xs flex items-center justify-between gap-2"
                   >
                     <div>
-                      <span className="font-medium text-slate-200 block">{pre.name}</span>
-                      {relation && <span className="text-[10px] text-slate-400">{relation}</span>}
+                      <span className="font-medium text-slate-900 block">{pre.name}</span>
+                      {relation && <span className="text-[10px] text-slate-500">{relation}</span>}
                     </div>
                     <span
-                      className={`font-mono text-[11px] px-2 py-0.5 rounded-full ${
-                        preConf >= 0.7
-                          ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'
-                          : preConf >= 0.4
-                          ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
-                          : 'bg-red-500/10 text-red-300 border border-red-500/20'
-                      }`}
+                      className={`font-mono text-[11px] px-2 py-0.5 rounded-full font-semibold border ${preBadge.bgColor} ${preBadge.textColor} ${preBadge.borderColor}`}
                     >
-                      {Math.round(preConf * 100)}%
+                      {isPreAssessed ? `${Math.round((preConf || 0) * 100)}%` : 'Unassessed'}
                     </span>
                   </div>
                 );
@@ -163,12 +165,12 @@ export function ConceptInspector({
 
         {/* Downstream Dependents (Outgoing) */}
         <div>
-          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
-            <GitFork className="w-3.5 h-3.5 text-indigo-400" />
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5">
+            <GitFork className="w-3.5 h-3.5 text-indigo-600" />
             Unlocks Subsequent Concepts ({outgoing.length})
           </h4>
           {outgoing.length === 0 ? (
-            <p className="text-xs text-slate-500 italic bg-slate-950/30 p-2.5 rounded-lg border border-slate-800/40">
+            <p className="text-xs text-slate-500 italic bg-slate-50 p-2.5 rounded-lg border border-slate-200">
               Terminal Curriculum Node: Culmination of this branch.
             </p>
           ) : (
@@ -178,15 +180,13 @@ export function ConceptInspector({
                 return (
                   <div
                     key={dep.id}
-                    className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 text-xs flex items-center justify-between gap-2"
+                    className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-xs flex items-center justify-between gap-2"
                   >
                     <div>
-                      <span className="font-medium text-slate-200 block">{dep.name}</span>
-                      {relation && <span className="text-[10px] text-slate-400">{relation}</span>}
+                      <span className="font-medium text-slate-900 block">{dep.name}</span>
+                      {relation && <span className="text-[10px] text-slate-500">{relation}</span>}
                     </div>
-                    <span className="text-[10px] text-indigo-300 bg-indigo-950/60 border border-indigo-800/50 px-2 py-0.5 rounded-full">
-                      Dependent
-                    </span>
+                    <span className="font-mono text-[10px] text-slate-400">ID: {dep.id}</span>
                   </div>
                 );
               })}
@@ -196,32 +196,26 @@ export function ConceptInspector({
 
         {/* Questions Available */}
         <div>
-          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-            Diagnostic Questions in Pool
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+            Diagnostic Questions in Pool ({relatedQuestions.length})
           </h4>
-          <div className="text-xs text-slate-400 bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60 flex items-center justify-between">
-            <span>{relatedQuestions.length} questions targeting this node</span>
-            <span className="font-mono text-indigo-400 font-semibold">
-              {relatedQuestions.filter((q) => q.difficulty === 'foundational').length} Foundational /{' '}
-              {relatedQuestions.filter((q) => q.difficulty === 'intermediate').length} Inter /{' '}
-              {relatedQuestions.filter((q) => q.difficulty === 'advanced').length} Adv
-            </span>
-          </div>
+          <p className="text-xs text-slate-600">
+            {relatedQuestions.length > 0
+              ? `${relatedQuestions.length} curated questions available across foundational to advanced tiers.`
+              : 'No dedicated question items yet.'}
+          </p>
         </div>
       </div>
 
-      {/* Footer action */}
+      {/* Target Action Button */}
       {onSelectAsTarget && (
-        <div className="pt-4 border-t border-slate-800 mt-4">
+        <div className="pt-4 border-t border-slate-200 mt-4">
           <button
-            onClick={() => {
-              onSelectAsTarget(concept.id);
-              onClose();
-            }}
-            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-1.5"
+            onClick={() => onSelectAsTarget(concept.id)}
+            className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
-            <Sparkles className="w-3.5 h-3.5" />
-            Focus Adaptive Assessment on this Concept
+            <span>Target This Concept in Adaptive Engine</span>
+            <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
