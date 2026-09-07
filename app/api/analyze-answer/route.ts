@@ -407,10 +407,26 @@ function sanitizeAnalysisResult(parsed: any): AnswerAnalysisResult {
   };
 }
 
+function significantTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((token) => token.length > 3);
+}
+
+function sampleSolutionOverlap(answer: string, sampleSolution: string): number {
+  const answerSet = new Set(significantTokens(answer));
+  const sampleTokens = significantTokens(sampleSolution);
+  if (sampleTokens.length === 0) return 0;
+  const matches = sampleTokens.filter((token) => answerSet.has(token)).length;
+  return matches / sampleTokens.length;
+}
+
 function fallbackEvaluateAnswer(question: Question, answer: string, imageDataUrl?: string): AnswerAnalysisResult {
   const norm = (answer || '').toLowerCase().trim();
   const sample = (question.sampleSolution || '').toLowerCase();
   const rubric = question.rubricKeyPoints || [];
+  const referenceOverlap = sampleSolutionOverlap(answer, question.sampleSolution || '');
 
   if (imageDataUrl && (!answer || answer.trim().length < 4)) {
     return {
@@ -450,7 +466,7 @@ function fallbackEvaluateAnswer(question: Question, answer: string, imageDataUrl
 
   const ratio = rubric.length > 0 ? matchedRubricCount / rubric.length : 0.5;
 
-  if (ratio >= 0.6 || norm.includes(sample.slice(0, 15))) {
+  if (referenceOverlap >= 0.45 || ratio >= 0.6 || norm.includes(sample.slice(0, 15))) {
     return {
       status: 'correct',
       score: 0.95,
