@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic
+sentence-transformers
+faiss-cpu
+numpy
+python-dotenv
+google-genai
+pymupdf
+pillow
+python-multipart
+opencv-python-headless
